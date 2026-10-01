@@ -26,7 +26,7 @@ jobs:
 
       - name: Generate and post article
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
           HATENA_ID: ${{ secrets.HATENA_ID }}
           HATENA_BLOG_ID: ${{ secrets.HATENA_BLOG_ID }}
