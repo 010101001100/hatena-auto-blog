@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 import xml.etree.ElementTree as ET
 
 import requests
+import markdown
 
 ATOM_NS = "http://www.w3.org/2005/Atom"
 APP_NS = "http://www.w3.org/2007/app"
@@ -66,12 +67,7 @@ def gemini_text(api_key: str, model: str, prompt: str, temperature: float = 0.7)
 
 def build_draft_prompt(theme: str, syntax: str, recent_titles: list[str]) -> str:
     recent = "\n".join(f"- {t}" for t in recent_titles) or "- なし"
-    syntax_rules = {
-        "markdown": "本文はMarkdown。見出しは ## / ### を使う。",
-        "hatena": "本文ははてな記法。大見出しは *、小見出しは ** を使う。",
-        "plain": "本文はプレーンテキスト。",
-    }
-    rule = syntax_rules.get(syntax.lower(), syntax_rules["markdown"])
+    rule = "本文はMarkdown。見出しは ## / ###、箇条書き、番号付きリスト、コードブロックを適切に使う。"
 
     return f"""
 日本語ブログの記事を1本だけ書いてください。
@@ -199,26 +195,20 @@ def make_atom_xml(
     author_el = ET.SubElement(entry, f"{{{ATOM_NS}}}author")
     ET.SubElement(author_el, f"{{{ATOM_NS}}}name").text = author
 
-    content_types = {
-        "markdown": "text/x-markdown",
-        "hatena": "text/x-hatena-syntax",
-        "plain": "text/html",
-    }
-    content_type = content_types.get(syntax.lower(), "text/x-markdown")
-
-    if syntax.lower() == "plain":
-        paragraphs = [
-            f"<p>{p.strip()}</p>"
-            for p in body.split("\n\n")
-            if p.strip()
-        ]
-        body = "\n".join(paragraphs)
+    # はてな側のMarkdown解釈に依存せず、こちらでHTMLへ変換する。
+    # これにより ## や ``` がそのまま表示される事故を防ぐ。
+    html_body = markdown.markdown(
+        body,
+        extensions=["fenced_code", "tables", "sane_lists"],
+        output_format="html5",
+    )
 
     ET.SubElement(
         entry,
         f"{{{ATOM_NS}}}content",
-        {"type": content_type},
-    ).text = body
+        {"type": "text/html"},
+    ).text = html_body
+
     ET.SubElement(entry, f"{{{ATOM_NS}}}updated").text = datetime.now(
         ZoneInfo("Asia/Tokyo")
     ).isoformat(timespec="seconds")
@@ -231,7 +221,6 @@ def make_atom_xml(
     ET.SubElement(control, f"{{{APP_NS}}}draft").text = "yes" if draft else "no"
 
     return ET.tostring(entry, encoding="utf-8", xml_declaration=True)
-
 
 def post_to_hatena(url: str, hatena_id: str, api_key: str, xml_body: bytes) -> str:
     r = requests.post(
