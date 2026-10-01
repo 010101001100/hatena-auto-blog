@@ -65,7 +65,48 @@ def gemini_text(api_key: str, model: str, prompt: str, temperature: float = 0.7)
         raise RuntimeError(f"Gemini APIの応答を解析できません: {data}") from e
 
 
-def build_draft_prompt(theme: str, syntax: str, recent_titles: list[str]) -> str:
+def build_topic_prompt(theme: str, recent_titles: list[str]) -> str:
+    recent = "\n".join(f"- {t}" for t in recent_titles) or "- なし"
+    return f"""
+次のブログ向けに、直近記事と明確に異なる新しい記事ネタを1つ選んでください。
+
+ブログの方向性:
+{theme}
+
+直近の記事タイトル:
+{recent}
+
+厳守:
+- 直近記事と同じ製品名・サービス名・OS名・トラブル種別を選ばない
+- 直近記事がDocker/Immich/Windows系なら、それらを含むテーマは避ける
+- 「○○が起動しない」「○○エラー」など似たトラブル解決記事を連投しない
+- ブログの方向性から外れない
+- 初心者が検索しそうな具体的な疑問にする
+- 最新ニュースや価格など鮮度依存の話題は避ける
+
+出力形式:
+TOPIC: 記事テーマ
+INTENT: 読者が解決したいこと
+MUST_INCLUDE: 記事に必ず入れる具体要素
+""".strip()
+
+
+def choose_topic(api_key: str, model: str, theme: str, recent_titles: list[str]) -> tuple[str, str, str]:
+    text = gemini_text(
+        api_key,
+        model,
+        build_topic_prompt(theme, recent_titles),
+        temperature=0.85,
+    )
+    topic = re.search(r"TOPIC:\s*(.+)", text)
+    intent = re.search(r"INTENT:\s*(.+)", text)
+    must = re.search(r"MUST_INCLUDE:\s*(.+)", text)
+    if not (topic and intent and must):
+        raise RuntimeError("記事ネタ選定の出力を解析できませんでした")
+    return topic.group(1).strip(), intent.group(1).strip(), must.group(1).strip()
+
+
+def build_draft_prompt(theme: str, syntax: str, recent_titles: list[str], topic: str, intent: str, must_include: str) -> str:
     recent = "\n".join(f"- {t}" for t in recent_titles) or "- なし"
     rule = "本文はMarkdown。見出しは ## / ###、箇条書き、番号付きリスト、コードブロックを適切に使う。"
 
@@ -75,11 +116,21 @@ def build_draft_prompt(theme: str, syntax: str, recent_titles: list[str]) -> str
 ブログの方向性:
 {theme}
 
+今回の記事テーマ:
+{topic}
+
+読者の検索意図:
+{intent}
+
+必ず入れる具体要素:
+{must_include}
+
 直近の記事:
 {recent}
 
 最重要:
-- 直近記事と内容が重複しない
+- 今回の記事テーマから絶対に逸脱しない
+- 直近記事と同じ製品・サービス・OS・トラブルの話へ戻らない
 - 読者が検索してきた疑問を1つだけ、具体的に解決する
 - 一般論の寄せ集めではなく、その場で試せる手順・設定例・コード例・判断基準のどれかを必ず入れる
 - 知らない事実や数字、体験談、口コミ、出典を作らない
@@ -88,14 +139,13 @@ def build_draft_prompt(theme: str, syntax: str, recent_titles: list[str]) -> str
 - 「はじめに」「まとめ」だけの空疎な見出しは禁止
 - 同じ意味の説明を言い換えて水増ししない
 - タイトルは具体的で32文字程度まで。煽らない
-- 本文は1200〜2400字程度。必要なら短くてよい
+- 本文は1400〜2400字程度
 - 1段落は2〜4文を目安にし、長い段落を作らない
 - 見出しの前後には必ず空行を入れる
 - 手順が3つ以上ある場合は箇条書きか番号付きリストにする
 - コマンド・設定値・コードは必ずコードブロックにする
 - 画面上で読みやすい余白を作り、文章を一塊にしない
 - H2相当の見出しを3〜6個使う
-- 必要なら「結論」「原因」「手順」「うまくいかない場合」のように検索意図に沿った見出しを使う
 - {rule}
 
 出力:
@@ -103,7 +153,6 @@ TITLE: タイトル
 ---BODY---
 本文
 """.strip()
-
 
 def parse_article(text: str) -> tuple[str, str]:
     m = re.search(r"TITLE:\s*(.+?)\s*\n---BODY---\s*\n(.+)$", text, flags=re.DOTALL)
@@ -151,7 +200,7 @@ REASON: 50〜150文字で理由
 def quality_check(api_key: str, model: str, title: str, body: str, theme: str, recent_titles: list[str]) -> tuple[bool, str]:
     if len(title) < 4 or len(title) > 60:
         return False, "タイトル長が不適切"
-    if len(body) < 1000:
+    if len(body) < 1200:
         return False, f"本文が短すぎる（{len(body)}文字）"
 
     banned = ["いかがでしたか", "ぜひ参考にしてください", "本記事では"]
@@ -243,21 +292,36 @@ def main() -> int:
     url = endpoint(hatena_id, blog_id)
     recent_titles = fetch_recent_titles(url, hatena_id, hatena_api_key)
 
+    topic, intent, must_include = choose_topic(
+        gemini_key,
+        model,
+        theme,
+        recent_titles,
+    )
+    print(f"選定テーマ: {topic}")
+
     title = ""
     body = ""
     passed = False
     reason = ""
 
     for attempt in range(1, 4):
-        prompt = build_draft_prompt(theme, syntax, recent_titles)
+        prompt = build_draft_prompt(
+            theme,
+            syntax,
+            recent_titles,
+            topic,
+            intent,
+            must_include,
+        )
         if reason:
-            prompt += f"\n\n前回は品質チェックで不合格でした。理由: {reason}\n同じ欠点を直して、別の完成原稿を作ってください。"
+            prompt += f"\n\n前回は品質チェックで不合格でした。理由: {reason}\nテーマは変えず、欠点だけ直して完成原稿を作り直してください。"
 
         first = gemini_text(
             gemini_key,
             model,
             prompt,
-            temperature=0.75,
+            temperature=0.65,
         )
         title, body = parse_article(first)
         passed, reason = quality_check(
