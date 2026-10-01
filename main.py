@@ -42,82 +42,140 @@ def fetch_recent_titles(url: str, hatena_id: str, api_key: str) -> list[str]:
         t = entry.findtext("atom:title", default="", namespaces=ns).strip()
         if t:
             titles.append(t)
-    return titles[:7]
+    return titles[:10]
 
 
-def build_prompt(theme: str, syntax: str, recent_titles: list[str]) -> str:
+def gemini_text(api_key: str, model: str, prompt: str, temperature: float = 0.7) -> str:
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": temperature,
+            "maxOutputTokens": 6000,
+        },
+    }
+    r = requests.post(url, params={"key": api_key}, json=payload, timeout=120)
+    if r.status_code != 200:
+        raise RuntimeError(f"Gemini API失敗: HTTP {r.status_code}\n{r.text[:1200]}")
+    data = r.json()
+    try:
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except (KeyError, IndexError, TypeError) as e:
+        raise RuntimeError(f"Gemini APIの応答を解析できません: {data}") from e
+
+
+def build_draft_prompt(theme: str, syntax: str, recent_titles: list[str]) -> str:
     recent = "\n".join(f"- {t}" for t in recent_titles) or "- なし"
     syntax_rules = {
         "markdown": "本文はMarkdown。見出しは ## / ### を使う。",
         "hatena": "本文ははてな記法。大見出しは *、小見出しは ** を使う。",
-        "plain": "本文はプレーンテキスト。短い段落と箇条書きを使う。",
+        "plain": "本文はプレーンテキスト。",
     }
     rule = syntax_rules.get(syntax.lower(), syntax_rules["markdown"])
-    return f"""
-あなたは日本語の実用ブログ編集者です。
-次のテーマに沿って、検索から長期的に読まれるエバーグリーン記事を1本作ってください。
 
-ブログテーマ:
+    return f"""
+日本語ブログの記事を1本だけ書いてください。
+
+ブログの方向性:
 {theme}
 
-直近の記事タイトル（似すぎた話題は避ける）:
+直近の記事:
 {recent}
 
-ルール:
-- 読者の具体的な疑問や困りごとを1つ解決する
-- 自然な日本語のタイトルにする
-- おおむね1800〜3000日本語文字
-- 結論→理由→手順→注意点→まとめ、の順を基本にする
-- 実体験を捏造しない
-- 最新ニュース、投資判断、医療診断、法律判断、特定時点の価格・統計などは扱わない
-- 根拠のない数字・ランキング・口コミ・引用・出典を作らない
-- キーワードを不自然に詰め込まない
+最重要:
+- 直近記事と内容が重複しない
+- 読者が検索してきた疑問を1つだけ、具体的に解決する
+- 一般論の寄せ集めではなく、その場で試せる手順・設定例・コード例・判断基準のどれかを必ず入れる
+- 知らない事実や数字、体験談、口コミ、出典を作らない
+- 最新情報の確認が必要な話題は避ける
+- 「本記事では」「いかがでしたか」「ぜひ参考にしてください」「〜について解説します」のようなAIっぽい定型文は禁止
+- 「はじめに」「まとめ」だけの空疎な見出しは禁止
+- 同じ意味の説明を言い換えて水増ししない
+- タイトルは具体的で32文字程度まで。煽らない
+- 本文は1200〜2400字程度。必要なら短くてよい
 - {rule}
-- 本文冒頭にタイトルを繰り返さない
 
-出力形式:
-TITLE: 記事タイトル
+出力:
+TITLE: タイトル
 ---BODY---
-記事本文
+本文
 """.strip()
 
 
-def generate_article(api_key: str, model: str, prompt: str) -> tuple[str, str]:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    payload = {
-        "contents": [
-            {
-                "parts": [{"text": prompt}]
-            }
-        ],
-        "generationConfig": {
-            "temperature": 0.8,
-            "maxOutputTokens": 4096
-        }
-    }
-    r = requests.post(
-        url,
-        params={"key": api_key},
-        json=payload,
-        timeout=120,
-    )
-    if r.status_code != 200:
-        raise RuntimeError(f"Gemini API失敗: HTTP {r.status_code}\n{r.text[:1200]}")
-
-    data = r.json()
-    try:
-        text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except (KeyError, IndexError, TypeError) as e:
-        raise RuntimeError(f"Gemini APIの応答を解析できません: {data}") from e
-
-    m = re.match(r"^TITLE:\s*(.+?)\s*\n---BODY---\s*\n(.+)$", text, flags=re.DOTALL)
+def parse_article(text: str) -> tuple[str, str]:
+    m = re.search(r"TITLE:\s*(.+?)\s*\n---BODY---\s*\n(.+)$", text, flags=re.DOTALL)
     if not m:
         raise RuntimeError("AI出力を解析できませんでした")
-    title = m.group(1).strip()
-    body = m.group(2).strip()
-    if len(title) < 4 or len(body) < 500:
-        raise RuntimeError("生成記事が短すぎるため投稿を中止しました")
-    return title, body
+    return m.group(1).strip(), m.group(2).strip()
+
+
+def build_editor_prompt(title: str, body: str, theme: str, recent_titles: list[str]) -> str:
+    recent = "\n".join(f"- {t}" for t in recent_titles) or "- なし"
+    return f"""
+あなたは厳しいブログ編集者です。次の原稿を公開前に査読してください。
+
+ブログの方向性:
+{theme}
+
+直近の記事:
+{recent}
+
+原稿タイトル:
+{title}
+
+原稿本文:
+{body}
+
+公開基準:
+1. 読者の疑問が明確で、具体的な答えがある
+2. 手順・設定例・コード例・比較軸など、持ち帰れる情報がある
+3. ありきたりな一般論、水増し、同語反復が少ない
+4. 捏造した体験談・数字・引用・出典・断定がない
+5. タイトルと本文が一致している
+6. AI臭い定型文や過剰な前置きがない
+7. 直近記事の焼き直しではない
+8. 誤解を招く危険な助言ではない
+
+原稿をそのまま通してはいけません。必要なら大幅に書き直してください。
+それでも公開品質にできない場合は FAIL にしてください。
+
+出力形式を厳守:
+QUALITY: PASS または FAIL
+TITLE: 最終タイトル
+---BODY---
+最終本文
+""".strip()
+
+
+def edit_and_gate(api_key: str, model: str, title: str, body: str, theme: str, recent_titles: list[str]) -> tuple[bool, str, str]:
+    text = gemini_text(
+        api_key,
+        model,
+        build_editor_prompt(title, body, theme, recent_titles),
+        temperature=0.25,
+    )
+    quality = re.search(r"QUALITY:\s*(PASS|FAIL)", text)
+    if not quality:
+        raise RuntimeError("編集チェック結果を解析できませんでした")
+    final_title, final_body = parse_article(text)
+
+    if quality.group(1) != "PASS":
+        return False, final_title, final_body
+
+    banned = [
+        "いかがでしたか",
+        "ぜひ参考にしてください",
+        "本記事では",
+    ]
+    if any(x in final_body for x in banned):
+        return False, final_title, final_body
+
+    if len(final_title) < 4 or len(final_title) > 60:
+        return False, final_title, final_body
+    if len(final_body) < 800:
+        return False, final_title, final_body
+
+    return True, final_title, final_body
 
 
 def make_atom_xml(title: str, body: str, author: str, categories: list[str], draft: bool) -> bytes:
@@ -163,7 +221,7 @@ def main() -> int:
 
     theme = env(
         "BLOG_THEME",
-        "暮らしを少し楽にする実用的なコツ・整理・節約・デジタル活用",
+        "Web・AI・プログラミング・副業・ネット活用の実用情報。初心者が実際に手を動かせる内容を優先する",
     )
     model = env("GEMINI_MODEL", "gemini-3.5-flash-lite") or "gemini-3.5-flash-lite"
     syntax = env("BLOG_SYNTAX", "markdown") or "markdown"
@@ -174,14 +232,29 @@ def main() -> int:
     url = endpoint(hatena_id, blog_id)
     recent_titles = fetch_recent_titles(url, hatena_id, hatena_api_key)
 
-    title, body = generate_article(
+    first = gemini_text(
         gemini_key,
         model,
-        build_prompt(theme, syntax, recent_titles),
+        build_draft_prompt(theme, syntax, recent_titles),
+        temperature=0.75,
+    )
+    draft_title, draft_body = parse_article(first)
+
+    passed, title, body = edit_and_gate(
+        gemini_key,
+        model,
+        draft_title,
+        draft_body,
+        theme,
+        recent_titles,
     )
 
-    print(f"生成タイトル: {title}")
+    print(f"最終タイトル: {title}")
     print(f"本文文字数: {len(body)}")
+
+    if not passed:
+        print("品質チェック不合格のため投稿しませんでした。")
+        return 0
 
     if dry_run:
         print("\n--- DRY RUN: 投稿しません ---\n")
