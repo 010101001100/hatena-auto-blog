@@ -112,10 +112,10 @@ def parse_article(text: str) -> tuple[str, str]:
     return m.group(1).strip(), m.group(2).strip()
 
 
-def build_editor_prompt(title: str, body: str, theme: str, recent_titles: list[str]) -> str:
+def build_quality_prompt(title: str, body: str, theme: str, recent_titles: list[str]) -> str:
     recent = "\n".join(f"- {t}" for t in recent_titles) or "- なし"
     return f"""
-あなたは厳しいブログ編集者です。次の原稿を公開前に査読してください。
+あなたは厳しいブログ編集者です。次の原稿を公開してよいか判定してください。
 
 ブログの方向性:
 {theme}
@@ -132,54 +132,43 @@ def build_editor_prompt(title: str, body: str, theme: str, recent_titles: list[s
 公開基準:
 1. 読者の疑問が明確で、具体的な答えがある
 2. 手順・設定例・コード例・比較軸など、持ち帰れる情報がある
-3. ありきたりな一般論、水増し、同語反復が少ない
+3. 一般論、水増し、同語反復が少ない
 4. 捏造した体験談・数字・引用・出典・断定がない
 5. タイトルと本文が一致している
-6. AI臭い定型文や過剰な前置きがない
+6. AIっぽい定型文や過剰な前置きがない
 7. 直近記事の焼き直しではない
 8. 誤解を招く危険な助言ではない
+9. 本文が十分な長さで、段落・見出し・箇条書きが読みやすい
 
-原稿をそのまま通してはいけません。必要なら大幅に書き直してください。
-それでも公開品質にできない場合は FAIL にしてください。
+本文を書き直さないでください。判定だけしてください。
 
-出力形式を厳守:
+出力形式:
 QUALITY: PASS または FAIL
-TITLE: 最終タイトル
----BODY---
-最終本文
+REASON: 50〜150文字で理由
 """.strip()
 
 
-def edit_and_gate(api_key: str, model: str, title: str, body: str, theme: str, recent_titles: list[str]) -> tuple[bool, str, str]:
+def quality_check(api_key: str, model: str, title: str, body: str, theme: str, recent_titles: list[str]) -> tuple[bool, str]:
+    if len(title) < 4 or len(title) > 60:
+        return False, "タイトル長が不適切"
+    if len(body) < 1000:
+        return False, f"本文が短すぎる（{len(body)}文字）"
+
+    banned = ["いかがでしたか", "ぜひ参考にしてください", "本記事では"]
+    if any(x in body for x in banned):
+        return False, "AI定型文を検出"
+
     text = gemini_text(
         api_key,
         model,
-        build_editor_prompt(title, body, theme, recent_titles),
-        temperature=0.25,
+        build_quality_prompt(title, body, theme, recent_titles),
+        temperature=0.1,
     )
-    quality = re.search(r"QUALITY:\s*(PASS|FAIL)", text)
-    if not quality:
-        raise RuntimeError("編集チェック結果を解析できませんでした")
-    final_title, final_body = parse_article(text)
-
-    if quality.group(1) != "PASS":
-        return False, final_title, final_body
-
-    banned = [
-        "いかがでしたか",
-        "ぜひ参考にしてください",
-        "本記事では",
-    ]
-    if any(x in final_body for x in banned):
-        return False, final_title, final_body
-
-    if len(final_title) < 4 or len(final_title) > 60:
-        return False, final_title, final_body
-    if len(final_body) < 800:
-        return False, final_title, final_body
-
-    return True, final_title, final_body
-
+    m = re.search(r"QUALITY:\s*(PASS|FAIL)", text)
+    reason = re.search(r"REASON:\s*(.+)", text)
+    if not m:
+        return False, "品質判定の形式を解析できませんでした"
+    return m.group(1) == "PASS", (reason.group(1).strip() if reason else "理由なし")
 
 def make_atom_xml(
     title: str,
@@ -254,29 +243,41 @@ def main() -> int:
     url = endpoint(hatena_id, blog_id)
     recent_titles = fetch_recent_titles(url, hatena_id, hatena_api_key)
 
-    first = gemini_text(
-        gemini_key,
-        model,
-        build_draft_prompt(theme, syntax, recent_titles),
-        temperature=0.75,
-    )
-    draft_title, draft_body = parse_article(first)
+    title = ""
+    body = ""
+    passed = False
+    reason = ""
 
-    passed, title, body = edit_and_gate(
-        gemini_key,
-        model,
-        draft_title,
-        draft_body,
-        theme,
-        recent_titles,
-    )
+    for attempt in range(1, 4):
+        prompt = build_draft_prompt(theme, syntax, recent_titles)
+        if reason:
+            prompt += f"\n\n前回は品質チェックで不合格でした。理由: {reason}\n同じ欠点を直して、別の完成原稿を作ってください。"
 
-    print(f"最終タイトル: {title}")
-    print(f"本文文字数: {len(body)}")
+        first = gemini_text(
+            gemini_key,
+            model,
+            prompt,
+            temperature=0.75,
+        )
+        title, body = parse_article(first)
+        passed, reason = quality_check(
+            gemini_key,
+            model,
+            title,
+            body,
+            theme,
+            recent_titles,
+        )
+
+        print(f"試行 {attempt}: {title}")
+        print(f"本文文字数: {len(body)}")
+        print(f"品質判定: {'PASS' if passed else 'FAIL'} / {reason}")
+
+        if passed:
+            break
 
     if not passed:
-        print("品質チェック不合格のため投稿しませんでした。")
-        return 0
+        raise RuntimeError(f"3回生成しましたが品質基準を通過しませんでした: {reason}")
 
     if dry_run:
         print("\n--- DRY RUN: 投稿しません ---\n")
