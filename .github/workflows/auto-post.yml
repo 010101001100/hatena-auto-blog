@@ -34,6 +34,6 @@ jobs:
           BLOG_THEME: ${{ vars.BLOG_THEME }}
           BLOG_SYNTAX: ${{ vars.BLOG_SYNTAX }}
           BLOG_CATEGORIES: ${{ vars.BLOG_CATEGORIES }}
-          HATENA_DRAFT: ${{ vars.HATENA_DRAFT }}
-          DRY_RUN: ${{ vars.DRY_RUN }}
+          HATENA_DRAFT: "false"
+          DRY_RUN: "false"
         run: python main.py
