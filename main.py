@@ -165,7 +165,7 @@ def main() -> int:
         "BLOG_THEME",
         "暮らしを少し楽にする実用的なコツ・整理・節約・デジタル活用",
     )
-    model = env("GEMINI_MODEL", "gemini-2.5-flash-lite") or "gemini-2.5-flash-lite"
+    model = env("GEMINI_MODEL", "gemini-3.5-flash-lite") or "gemini-3.5-flash-lite"
     syntax = env("BLOG_SYNTAX", "markdown") or "markdown"
     categories = [x.strip() for x in env("BLOG_CATEGORIES", "").split(",") if x.strip()]
     draft = bool_env("HATENA_DRAFT", default=False)
