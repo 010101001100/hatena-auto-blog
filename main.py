@@ -93,6 +93,13 @@ def build_draft_prompt(theme: str, syntax: str, recent_titles: list[str]) -> str
 - 同じ意味の説明を言い換えて水増ししない
 - タイトルは具体的で32文字程度まで。煽らない
 - 本文は1200〜2400字程度。必要なら短くてよい
+- 1段落は2〜4文を目安にし、長い段落を作らない
+- 見出しの前後には必ず空行を入れる
+- 手順が3つ以上ある場合は箇条書きか番号付きリストにする
+- コマンド・設定値・コードは必ずコードブロックにする
+- 画面上で読みやすい余白を作り、文章を一塊にしない
+- H2相当の見出しを3〜6個使う
+- 必要なら「結論」「原因」「手順」「うまくいかない場合」のように検索意図に沿った見出しを使う
 - {rule}
 
 出力:
@@ -178,14 +185,40 @@ def edit_and_gate(api_key: str, model: str, title: str, body: str, theme: str, r
     return True, final_title, final_body
 
 
-def make_atom_xml(title: str, body: str, author: str, categories: list[str], draft: bool) -> bytes:
+def make_atom_xml(
+    title: str,
+    body: str,
+    author: str,
+    categories: list[str],
+    draft: bool,
+    syntax: str,
+) -> bytes:
     entry = ET.Element(f"{{{ATOM_NS}}}entry")
     ET.SubElement(entry, f"{{{ATOM_NS}}}title").text = title
 
     author_el = ET.SubElement(entry, f"{{{ATOM_NS}}}author")
     ET.SubElement(author_el, f"{{{ATOM_NS}}}name").text = author
 
-    ET.SubElement(entry, f"{{{ATOM_NS}}}content", {"type": "text/plain"}).text = body
+    content_types = {
+        "markdown": "text/x-markdown",
+        "hatena": "text/x-hatena-syntax",
+        "plain": "text/html",
+    }
+    content_type = content_types.get(syntax.lower(), "text/x-markdown")
+
+    if syntax.lower() == "plain":
+        paragraphs = [
+            f"<p>{p.strip()}</p>"
+            for p in body.split("\n\n")
+            if p.strip()
+        ]
+        body = "\n".join(paragraphs)
+
+    ET.SubElement(
+        entry,
+        f"{{{ATOM_NS}}}content",
+        {"type": content_type},
+    ).text = body
     ET.SubElement(entry, f"{{{ATOM_NS}}}updated").text = datetime.now(
         ZoneInfo("Asia/Tokyo")
     ).isoformat(timespec="seconds")
@@ -265,7 +298,7 @@ def main() -> int:
         url,
         hatena_id,
         hatena_api_key,
-        make_atom_xml(title, body, hatena_id, categories, draft),
+        make_atom_xml(title, body, hatena_id, categories, draft, syntax),
     )
     state = "下書き保存" if draft else "公開投稿"
     print(f"{state}しました: {location or '(Locationヘッダなし)'}")
