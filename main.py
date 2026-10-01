@@ -6,7 +6,6 @@ from zoneinfo import ZoneInfo
 import xml.etree.ElementTree as ET
 
 import requests
-from openai import OpenAI
 
 ATOM_NS = "http://www.w3.org/2005/Atom"
 APP_NS = "http://www.w3.org/2007/app"
@@ -83,9 +82,34 @@ TITLE: 記事タイトル
 """.strip()
 
 
-def generate_article(client: OpenAI, model: str, prompt: str) -> tuple[str, str]:
-    response = client.responses.create(model=model, input=prompt)
-    text = (response.output_text or "").strip()
+def generate_article(api_key: str, model: str, prompt: str) -> tuple[str, str]:
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    payload = {
+        "contents": [
+            {
+                "parts": [{"text": prompt}]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.8,
+            "maxOutputTokens": 4096
+        }
+    }
+    r = requests.post(
+        url,
+        params={"key": api_key},
+        json=payload,
+        timeout=120,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"Gemini API失敗: HTTP {r.status_code}\n{r.text[:1200]}")
+
+    data = r.json()
+    try:
+        text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except (KeyError, IndexError, TypeError) as e:
+        raise RuntimeError(f"Gemini APIの応答を解析できません: {data}") from e
+
     m = re.match(r"^TITLE:\s*(.+?)\s*\n---BODY---\s*\n(.+)$", text, flags=re.DOTALL)
     if not m:
         raise RuntimeError("AI出力を解析できませんでした")
@@ -132,7 +156,7 @@ def post_to_hatena(url: str, hatena_id: str, api_key: str, xml_body: bytes) -> s
 
 
 def main() -> int:
-    openai_key = env("OPENAI_API_KEY", required=True)
+    gemini_key = env("GEMINI_API_KEY", required=True)
     hatena_id = env("HATENA_ID", required=True)
     blog_id = env("HATENA_BLOG_ID", required=True)
     hatena_api_key = env("HATENA_API_KEY", required=True)
@@ -141,17 +165,20 @@ def main() -> int:
         "BLOG_THEME",
         "暮らしを少し楽にする実用的なコツ・整理・節約・デジタル活用",
     )
-    model = env("OPENAI_MODEL", "gpt-5.4-mini") or "gpt-5.4-mini"
+    model = env("GEMINI_MODEL", "gemini-2.5-flash-lite") or "gemini-2.5-flash-lite"
     syntax = env("BLOG_SYNTAX", "markdown") or "markdown"
     categories = [x.strip() for x in env("BLOG_CATEGORIES", "").split(",") if x.strip()]
-    draft = bool_env("HATENA_DRAFT", default=True)
+    draft = bool_env("HATENA_DRAFT", default=False)
     dry_run = bool_env("DRY_RUN", default=False)
 
     url = endpoint(hatena_id, blog_id)
     recent_titles = fetch_recent_titles(url, hatena_id, hatena_api_key)
 
-    client = OpenAI(api_key=openai_key)
-    title, body = generate_article(client, model, build_prompt(theme, syntax, recent_titles))
+    title, body = generate_article(
+        gemini_key,
+        model,
+        build_prompt(theme, syntax, recent_titles),
+    )
 
     print(f"生成タイトル: {title}")
     print(f"本文文字数: {len(body)}")
