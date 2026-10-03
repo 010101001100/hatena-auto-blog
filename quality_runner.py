@@ -248,6 +248,39 @@ JSONだけ:
         return data, sources, [seed["query"]]
 
     raise RuntimeError("最近の記事と重複せず、公式資料を2件以上取得できるテーマがありません")
+def ensure_official_references(article, sources):
+    if not sources:
+        return article
+
+    body = article["body"].strip()
+
+    # AIが作った参考情報は内容が揺れるので、公式検索で取得したURLからコード側で再構築する。
+    body = re.sub(
+        r"\n+## 参考情報\s*\n.*$",
+        "",
+        body,
+        flags=re.DOTALL,
+    ).rstrip()
+
+    refs = []
+    seen = set()
+    for src in sources:
+        url = (src.get("url") or "").strip()
+        title = (src.get("title") or url).strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        refs.append(f"- [{title}]({url})")
+        if len(refs) >= 3:
+            break
+
+    if len(refs) < 2:
+        raise RuntimeError("公式参考リンクを2件以上確保できませんでした")
+
+    article["body"] = body + "\n\n## 参考情報\n\n" + "\n".join(refs)
+    return article
+
+
 def strict_write_article(api_key, model, theme, memo, sources, titles, revision=""):
     if sources:
         evidence_rule = """
@@ -289,7 +322,7 @@ def strict_write_article(api_key, model, theme, memo, sources, titles, revision=
     if revision:
         combined += "\n\n前稿への修正指示:\n" + revision
 
-    return _base_write_article(
+    article = _base_write_article(
         api_key,
         model,
         theme,
@@ -298,6 +331,7 @@ def strict_write_article(api_key, model, theme, memo, sources, titles, revision=
         titles,
         combined,
     )
+    return ensure_official_references(article, sources)
 
 
 def strict_local_checks(article, memo, titles):
