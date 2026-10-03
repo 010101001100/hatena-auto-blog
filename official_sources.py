@@ -77,7 +77,7 @@ def clean_text(text: str) -> str:
     return text
 
 
-def fetch_page_text(url: str, timeout: int = 20) -> str:
+def fetch_page_text(url: str, timeout: int = 10) -> str:
     try:
         r = requests.get(
             url,
@@ -105,21 +105,16 @@ def search_official(topic: str, max_sources: int = 4) -> list[dict]:
 
     for domain in domains:
         query = f"site:{domain} {topic}"
-        for attempt in range(2):
-            try:
-                results = DDGS(timeout=12).text(
-                    query,
-                    region="jp-jp",
-                    safesearch="moderate",
-                    max_results=6,
-                )
-                break
-            except Exception as e:
-                if attempt:
-                    print(f"WARNING: 公式検索失敗 {domain}: {e}")
-                    results = []
-                else:
-                    time.sleep(2)
+        try:
+            results = DDGS(timeout=7).text(
+                query,
+                region="jp-jp",
+                safesearch="moderate",
+                max_results=5,
+            )
+        except Exception as e:
+            print(f"WARNING: 公式検索失敗 {domain}: {e}")
+            results = []
 
         for item in results or []:
             url = (item.get("href") or item.get("url") or "").strip()
@@ -134,7 +129,7 @@ def search_official(topic: str, max_sources: int = 4) -> list[dict]:
             })
 
     sources = []
-    for item in candidates[:10]:
+    for item in candidates[:7]:
         page_text = fetch_page_text(item["url"])
         evidence = page_text if len(page_text) >= 500 else item["snippet"]
         if len(evidence) < 120:
