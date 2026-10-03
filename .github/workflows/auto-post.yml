@@ -2,15 +2,27 @@ name: Hatena Auto Blog
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - quality_v2.py
+      - .github/workflows/auto-post.yml
+      - requirements.txt
   schedule:
     - cron: '17 8,20 * * *'
       timezone: 'Asia/Tokyo'
 
+concurrency:
+  group: hatena-auto-blog
+  cancel-in-progress: false
+
 jobs:
   write-and-publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,16 +36,20 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Generate and post article
+      - name: Research, write, review and publish
         env:
+          # 既存Secret名を維持。中身はGemini APIキー。
           GEMINI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
           HATENA_ID: ${{ secrets.HATENA_ID }}
           HATENA_BLOG_ID: ${{ secrets.HATENA_BLOG_ID }}
           HATENA_API_KEY: ${{ secrets.HATENA_API_KEY }}
+
           BLOG_THEME: ${{ vars.BLOG_THEME }}
-          BLOG_SYNTAX: ${{ vars.BLOG_SYNTAX }}
-          BLOG_CATEGORIES: ${{ vars.BLOG_CATEGORIES }}
+          RESEARCH_MODEL: ${{ vars.RESEARCH_MODEL }}
+          WRITER_MODEL: ${{ vars.WRITER_MODEL }}
+          CRITIC_MODEL: ${{ vars.CRITIC_MODEL }}
+
           HATENA_DRAFT: "false"
-          DRY_RUN: "false"
-        run: python main.py
+          # コード更新時のpushだけはテストとして投稿しない。
+          DRY_RUN: ${{ github.event_name == 'push' && 'true' || 'false' }}
+        run: python quality_v2.py
