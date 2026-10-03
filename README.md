@@ -1,31 +1,73 @@
-# はてなブログ 自動記事生成＆自動投稿
+# はてなブログ 高品質自動投稿
 
-GitHub Actionsで定期実行し、OpenAI APIで日本語記事を生成して、はてなブログAtomPub APIへ投稿します。
+GitHub Actionsで1日2回、**テーマ選定 → 調査 → 執筆 → 編集チェック → はてなブログ公開**まで自動化します。
 
-## できること
-- 毎日 08:17（Asia/Tokyo）に自動実行
-- 直近7記事のタイトルを取得して重複ネタを避ける
-- 実用系のエバーグリーン記事を生成
-- はてなブログへ下書きまたは公開投稿
-- Actions画面から手動実行
+## 現在の構成
+
+- 実行: 毎日 08:17 / 20:17（Asia/Tokyo）
+- AI: Gemini 3.5 Flashを優先
+- 3.5 Flashが使えない場合: Gemini 3.5 Flash-Liteへ自動フォールバック
+- Google検索グラウンディング: 利用可能な契約/クォータなら使用
+- 検索が使えない場合: 料金・割合・倍率・バージョンなど未確認の具体値を禁止
+- 直近最大50記事とタイトルを比較して重複を抑制
+- 記事は概ね2,200〜3,600字
+- 編集AIが6項目を採点し、全項目4/5以上だけ公開
+- 不合格なら1回全文を書き直す
+- 2回目も不合格なら、その回は**投稿しない**
+
+## 標準ジャンル
+
+BLOG_THEMEを設定していない場合は、次の実用領域に絞ります。
+
+- PC設定・トラブル解決
+- スマホ設定・データ整理
+- Webサービス・AIツール活用
+- バックアップ・ファイル管理
+- 個人の作業効率化
+
+医療・法律・投資・税務・危険作業など、完全自動記事と相性の悪い領域は避けます。
+
+## 品質チェック
+
+公開前に以下をチェックします。
+
+1. 検索意図との一致
+2. 具体性・再現性
+3. 事実性
+4. 構成・読みやすさ
+5. 実用性
+6. 過去記事との差別化
+
+さらに機械的に、本文長、見出し数、手順/箇条書き、AI定型句、既存タイトルとの類似度を検査します。
+
+Google検索ソースが取得できなかった実行では、金額、無料/有料、割合、倍率、OSバージョンなどの具体的断定が入ると公開不可になります。
 
 ## 必須 Secrets
-Settings → Secrets and variables → Actions → Secrets に登録:
-- OPENAI_API_KEY
-- HATENA_ID
-- HATENA_BLOG_ID
-- HATENA_API_KEY
+
+GitHubの `Settings → Secrets and variables → Actions → Secrets` に登録:
+
+- `OPENAI_API_KEY` — 名前は旧設定のままですが、**中身はGemini APIキー**
+- `HATENA_ID`
+- `HATENA_BLOG_ID`
+- `HATENA_API_KEY`
+
+APIキーはリポジトリのファイルに直接書かないでください。
 
 ## 任意 Variables
-同じ画面の Variables に登録できます:
-- BLOG_THEME
-- OPENAI_MODEL（未指定時 gpt-5.4-mini）
-- BLOG_SYNTAX（markdown / hatena / plain）
-- BLOG_CATEGORIES（例: 生活,便利）
-- HATENA_DRAFT（true=下書き、false=公開。未指定時はtrue）
-- DRY_RUN（true=生成だけで投稿しない）
 
-最初は HATENA_DRAFT=true のまま手動実行して、生成内容を確認してください。
+- `BLOG_THEME` — ブログの方向性を上書き
 
-## テスト
-GitHubの Actions → Hatena Auto Blog → Run workflow から実行できます。
+モデルは現在workflow側で `gemini-3.5-flash` に固定し、利用不可の場合だけFlash-Liteへ自動で落とします。
+
+## ファイル
+
+- `quality_v2.py` — 調査・執筆・品質判定・はてな投稿の本体
+- `quality_runner.py` — クォータ対応と未確認情報の追加ガード
+- `.github/workflows/auto-post.yml` — 1日2回の実行設定
+- `main.py` — 旧バージョン（現在は実行されません）
+
+## 投稿を止める
+
+GitHubの `Actions → Hatena Auto Blog → Disable workflow` で停止できます。
+
+GitHub Actionsのscheduled workflowは、GitHub側の混雑によって開始時刻が遅れる場合があります。
