@@ -104,7 +104,7 @@ def search_official(topic: str, max_sources: int = 4) -> list[dict]:
     seen = set()
 
     for domain in domains:
-        query = f'site:{domain} "{topic}"'
+        query = f"site:{domain} {topic}"
         for attempt in range(2):
             try:
                 results = DDGS(timeout=12).text(
@@ -154,6 +154,6 @@ def source_summary_for_prompt(sources: list[dict]) -> str:
             f"[公式資料{i}]\n"
             f"タイトル: {src['title']}\n"
             f"URL: {src['url']}\n"
-            f"抜粋: {src['evidence'][:6500]}"
+            f"抜粋: {src['evidence'][:4500]}"
         )
     return "\n\n".join(blocks)
