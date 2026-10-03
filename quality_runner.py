@@ -1,5 +1,7 @@
+import os
 import re
 import sys
+import time
 import quality_v2 as q
 
 _base_gemini = q.gemini
@@ -8,6 +10,21 @@ _base_critique = q.critique
 _base_local_checks = q.local_checks
 
 FALLBACK_MODELS = ["gemini-3.7-flash", "gemini-3.5-flash"]
+_LAST_CALL = 0.0
+
+
+def _throttle():
+    global _LAST_CALL
+    # Free tierの3.8 Flashは短時間の連続呼び出しで429になりやすいので間隔を空ける。
+    wait = 13.0 - (time.monotonic() - _LAST_CALL)
+    if wait > 0:
+        time.sleep(wait)
+    _LAST_CALL = time.monotonic()
+
+
+def _call_base(*args, **kwargs):
+    _throttle()
+    return _base_gemini(*args, **kwargs)
 
 
 def _models(primary):
@@ -20,33 +37,39 @@ def _models(primary):
 
 def robust_gemini(api_key, model, prompt, search=False, json_mode=False, max_tokens=7000):
     """
-    優先順位:
-    1) 調査はGoogle検索付き
-    2) 現在のAPI契約で検索が使えない場合だけ、安全なエバーグリーンモード
-    3) Flash-Liteには落とさない
+    通常は3.8 Flashの安全モードを使用。
+    USE_GOOGLE_SEARCH=true の時だけ検索グラウンディングを試す。
+    Flash-Liteには落とさない。
     """
     errors = []
 
     if search:
-        for candidate in _models(model):
-            try:
-                text, sources, queries = _base_gemini(
-                    api_key,
-                    candidate,
-                    prompt,
-                    search=True,
-                    json_mode=json_mode,
-                    max_tokens=max_tokens,
-                )
-                if len(sources) >= 2:
-                    print(f"検索調査モデル: {candidate} / ソース{len(sources)}件")
-                    return text, sources, queries
-                errors.append(f"{candidate}: ソース{len(sources)}件")
-            except RuntimeError as e:
-                errors.append(f"{candidate}: {e}")
+        search_enabled = os.getenv("USE_GOOGLE_SEARCH", "false").strip().lower() in {
+            "1", "true", "yes", "on"
+        }
+
+        if search_enabled:
+            for candidate in _models(model):
+                try:
+                    text, sources, queries = _call_base(
+                        api_key,
+                        candidate,
+                        prompt,
+                        search=True,
+                        json_mode=json_mode,
+                        max_tokens=max_tokens,
+                    )
+                    if len(sources) >= 2:
+                        print(f"検索調査モデル: {candidate} / ソース{len(sources)}件")
+                        return text, sources, queries
+                    errors.append(f"{candidate}: ソース{len(sources)}件")
+                except RuntimeError as e:
+                    errors.append(f"{candidate}: {e}")
+        else:
+            print("INFO: Google検索は無効。API枠を記事品質に使うため安全モードへ進みます")
 
         safe_prompt = """
-重要: このAPI契約ではGoogle検索ツールを利用できません。
+重要: この実行ではGoogle検索を使っていません。
 検索した、公式情報で確認した、最新情報を確認した、とは絶対に書かないでください。
 
 テーマ選定は長く有効なエバーグリーン内容だけに限定してください。
@@ -69,8 +92,8 @@ verified_facts欄も「記事作成時の仮説・確認候補」として慎重
 
         for candidate in _models(model):
             try:
-                print(f"WARNING: Google検索不可。{candidate} の安全なエバーグリーンモードで調査します")
-                return _base_gemini(
+                print(f"安全なエバーグリーン調査モデル: {candidate}")
+                return _call_base(
                     api_key,
                     candidate,
                     safe_prompt,
@@ -87,7 +110,7 @@ verified_facts欄も「記事作成時の仮説・確認候補」として慎重
         try:
             if candidate != model:
                 print(f"WARNING: {model} が使えないため {candidate} にフォールバックします")
-            return _base_gemini(
+            return _call_base(
                 api_key,
                 candidate,
                 prompt,
@@ -99,7 +122,6 @@ verified_facts欄も「記事作成時の仮説・確認候補」として慎重
             errors.append(f"{candidate}: {e}")
 
     raise RuntimeError("Gemini API失敗: " + " / ".join(errors[-3:]))
-
 
 def strict_write_article(api_key, model, theme, memo, sources, titles, revision=""):
     if sources:
