@@ -270,7 +270,7 @@ def strict_write_article(api_key, model, theme, memo, sources, titles, revision=
 
     quality_rule = f"""
 追加の品質条件:
-- 本文は1600〜2800字を目安にする。公式資料で言えることが少ない場合は無理に長くしない
+- 本文は1400〜2200字を目安にする。公式資料で言えることが少ない場合は無理に長くしない
 - 冒頭2〜3文で読者の疑問への答えを先に示す
 - 「なぜ」だけでなく「どこをどう操作するか」「どう判断するか」を書く
 - 具体的な手順・設定例・判断基準のうち最低2種類を入れる
@@ -300,9 +300,9 @@ def strict_local_checks(article, memo, titles):
     issues = list(_base_local_checks(article, memo, titles))
     body = article["body"]
 
-    if len(body) < 1400:
+    if len(body) < 1300:
         issues.append(f"本文がまだ薄い ({len(body)}文字)")
-    if len(body) > 3600:
+    if len(body) > 2800:
         issues.append(f"本文が冗長 ({len(body)}文字)")
 
     h2s = re.findall(r"(?m)^##\s+(.+)$", body)
@@ -326,31 +326,34 @@ def grounding_audit(api_key, model, article, memo):
         return False, ["公式資料本文がありません"]
 
     prompt = f"""
-あなたはファクトチェック専任編集者です。
-次の「公式資料の抜粋」だけを根拠に、記事内の製品仕様・画面名・操作手順・挙動・注意点を監査してください。
+あなたは実用記事のファクトチェック担当です。
+次の公式資料だけを根拠に、記事に「読者を誤操作させる実質的な誤り」がないか監査してください。
 一般知識やあなた自身の記憶は根拠に使わないでください。
 
-【公式資料の抜粋】
+【公式資料】
 {evidence}
 
-【監査対象記事】
+【記事】
 タイトル: {article['title']}
 本文:
 {article['body']}
 
-判定ルール:
-- 公式資料の抜粋から直接確認できる、または自然に言い換えた内容はSUPPORTED
-- 公式資料にない具体的な画面名、ボタン名、手順、仕様、効果、リスクはUNSUPPORTED
-- 公式資料と食い違う内容はCONFLICT
-- 一般的な文章表現や読者への案内は監査対象外
-- UNSUPPORTEDまたはCONFLICTが1件でもあれば pass=false
-- 厳しめに判定する
+重要な判定ルール:
+- 目的、設定経路、ボタン/項目、機能の効果、データ消失リスクなど、読者の行動結果に影響する内容を重点監査する
+- 公式資料に明記された手順を自然な日本語に言い換えたものはSUPPORTED
+- 「3点メニュー」「画面左側」などの補助的な見た目説明や、ごく軽微な表記差だけではFAILにしない
+- 「通知をオン/オフ」と「通知を許可/ブロック」のように意味が同じ言い換えは矛盾扱いしない
+- OSや端末が異なる手順を混ぜ、読者が操作できなくなる場合は重大なCONFLICT
+- 公式資料にない追加の操作・機能・効果を事実として断定している場合はMATERIAL_UNSUPPORTED
+- 危険な操作、データ消失につながる誤り、存在しない設定経路は必ずFAIL
+- 単なる文体、タイトルの言い回し、補足的な説明の不足はこの監査ではFAILにしない
 
-JSONだけを返してください:
+JSONだけ:
 {{
   "pass": true,
-  "unsupported": ["未裏付けの主張"],
-  "conflicts": ["公式資料と矛盾する主張"]
+  "material_unsupported": ["重大な未裏付け主張"],
+  "conflicts": ["実質的な矛盾"],
+  "minor_notes": ["公開を止めるほどではない軽微な表現差"]
 }}
 """.strip()
 
@@ -360,15 +363,22 @@ JSONだけを返してください:
         prompt,
         search=False,
         json_mode=True,
-        max_tokens=3000,
+        max_tokens=2500,
     )
     report = q.parse_json(text)
-    unsupported = [x for x in report.get("unsupported", []) if isinstance(x, str)]
+    unsupported = [
+        x for x in report.get("material_unsupported", []) if isinstance(x, str)
+    ]
     conflicts = [x for x in report.get("conflicts", []) if isinstance(x, str)]
+    minor = [x for x in report.get("minor_notes", []) if isinstance(x, str)]
+
+    if minor:
+        print("公式監査の軽微な注記: " + " / ".join(minor[:4]))
+
     passed = bool(report.get("pass")) and not unsupported and not conflicts
     problems = []
-    problems.extend(f"公式資料で裏付け不可: {x}" for x in unsupported[:6])
-    problems.extend(f"公式資料と矛盾: {x}" for x in conflicts[:6])
+    problems.extend(f"公式資料で重大な裏付け不足: {x}" for x in unsupported[:6])
+    problems.extend(f"公式資料と実質矛盾: {x}" for x in conflicts[:6])
     return passed, problems
 
 def strict_critique(api_key, model, article, memo, sources, titles):
