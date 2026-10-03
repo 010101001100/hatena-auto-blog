@@ -356,7 +356,7 @@ def main():
 
     revision = ""
     article = None
-    for attempt in range(1, 3):
+    for attempt in range(1, 4):
         article = write_article(key, writer_model, theme, memo, sources, titles, revision)
         passed, report, checks = critique(key, critic_model, article, memo, sources, titles)
         keys = ("intent_match", "specificity", "evidence", "structure", "usefulness", "originality")
@@ -369,7 +369,7 @@ def main():
             break
         revision = revision_note(report, checks)
     else:
-        raise RuntimeError("2回修正しても品質基準を通過しないため公開を中止します")
+        raise RuntimeError("3回生成しても品質基準を通過しないため公開を中止します")
 
     categories = ["実用", article["category"]]
     if dry_run:
