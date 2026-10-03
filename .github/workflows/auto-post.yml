@@ -44,6 +44,5 @@ jobs:
           CRITIC_MODEL: "gemini-3.8-flash"
 
           HATENA_DRAFT: "false"
-          # 手動実行はテストのみ。定期実行だけ公開する。
-          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
+          DRY_RUN: "false"
         run: python quality_entry.py
