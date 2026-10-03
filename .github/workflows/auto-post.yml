@@ -16,7 +16,7 @@ on:
 
 concurrency:
   group: hatena-auto-blog
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   write-and-publish:
