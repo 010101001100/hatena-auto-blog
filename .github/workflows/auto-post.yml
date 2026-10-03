@@ -2,14 +2,6 @@ name: Hatena Auto Blog
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - quality_v2.py
-      - quality_runner.py
-      - quality_entry.py
-      - .github/workflows/auto-post.yml
-      - requirements.txt
   schedule:
     - cron: '17 8,20 * * *'
       timezone: 'Asia/Tokyo'
@@ -52,5 +44,6 @@ jobs:
           CRITIC_MODEL: "gemini-3.8-flash"
 
           HATENA_DRAFT: "false"
-          DRY_RUN: ${{ github.event_name == 'push' && 'true' || 'false' }}
+          # 手動実行はテストのみ。定期実行だけ公開する。
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
         run: python quality_entry.py
