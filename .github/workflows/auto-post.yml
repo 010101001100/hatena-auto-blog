@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - quality_v2.py
+      - quality_runner.py
       - .github/workflows/auto-post.yml
       - requirements.txt
   schedule:
@@ -38,18 +39,16 @@ jobs:
 
       - name: Research, write, review and publish
         env:
-          # 既存Secret名を維持。中身はGemini APIキー。
           GEMINI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           HATENA_ID: ${{ secrets.HATENA_ID }}
           HATENA_BLOG_ID: ${{ secrets.HATENA_BLOG_ID }}
           HATENA_API_KEY: ${{ secrets.HATENA_API_KEY }}
 
           BLOG_THEME: ${{ vars.BLOG_THEME }}
-          RESEARCH_MODEL: ${{ vars.RESEARCH_MODEL }}
-          WRITER_MODEL: ${{ vars.WRITER_MODEL }}
-          CRITIC_MODEL: ${{ vars.CRITIC_MODEL }}
+          RESEARCH_MODEL: "gemini-3.5-flash"
+          WRITER_MODEL: "gemini-3.5-flash"
+          CRITIC_MODEL: "gemini-3.5-flash"
 
           HATENA_DRAFT: "false"
-          # コード更新時のpushだけはテストとして投稿しない。
           DRY_RUN: ${{ github.event_name == 'push' && 'true' || 'false' }}
-        run: python quality_v2.py
+        run: python quality_runner.py
