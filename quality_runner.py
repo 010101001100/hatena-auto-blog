@@ -4,6 +4,7 @@ import re
 import sys
 import time
 import quality_v2 as q
+from official_sources import search_official, source_summary_for_prompt
 
 _base_gemini = q.gemini
 _base_write_article = q.write_article
@@ -127,27 +128,82 @@ verified_facts欄も「記事作成時の仮説・確認候補」として慎重
 
 
 def retry_research(api_key, model, theme, titles, reject=""):
+    """
+    AIはテーマ候補だけ作る。
+    その後、公式ドメインを外部検索し、本文を取得できた公式資料が2件以上あるテーマだけ採用する。
+    """
     last = None
-    for attempt in range(3):
-        try:
-            extra_reject = reject
-            if attempt:
-                extra_reject = (
-                    reject
-                    + "\n前回はJSON形式が壊れました。改行を含む文字列は正しくJSONエスケープし、"
-                    + "JSONオブジェクト以外を一切出力しないでください。"
-                )
-            return _base_research(api_key, model, theme, titles, extra_reject)
-        except (json.JSONDecodeError, ValueError) as e:
-            last = e
-            print(f"WARNING: 調査JSONの解析に失敗。再生成します ({attempt + 1}/3): {e}")
-    raise last
+    accumulated_reject = reject
 
+    for topic_attempt in range(3):
+        data = None
+        for json_attempt in range(3):
+            try:
+                extra_reject = accumulated_reject
+                if json_attempt:
+                    extra_reject = (
+                        accumulated_reject
+                        + "\n前回はJSON形式が壊れました。改行を含む文字列は正しくJSONエスケープし、"
+                        + "JSONオブジェクト以外を一切出力しないでください。"
+                    )
+                data, _, queries = _base_research(
+                    api_key, model, theme, titles, extra_reject
+                )
+                break
+            except (json.JSONDecodeError, ValueError) as e:
+                last = e
+                print(
+                    f"WARNING: 調査JSONの解析に失敗。再生成します "
+                    f"({json_attempt + 1}/3): {e}"
+                )
+
+        if not data:
+            continue
+
+        topic = data.get("topic", "")
+        print(f"公式情報を検索: {topic}")
+        official = search_official(topic, max_sources=4)
+
+        if len(official) >= 2:
+            data["verified_facts"] = []
+            data["pitfalls"] = []
+            data["hands_on"] = []
+            data["official_evidence"] = source_summary_for_prompt(official)
+            data["grounding_rule"] = (
+                "記事中の製品仕様、画面名、操作手順、挙動、注意点は"
+                "official_evidenceに明記された内容だけを事実として扱う。"
+                "公式資料にないことは断定しない。"
+            )
+            sources = [
+                {
+                    "title": src["title"],
+                    "url": src["url"],
+                    "domain": src.get("domain", ""),
+                }
+                for src in official
+            ]
+            print(f"公式資料を{len(sources)}件取得")
+            return data, sources, queries
+
+        print(f"WARNING: 公式資料が{len(official)}件しか取れませんでした。テーマを変更します")
+        accumulated_reject += (
+            f"\n前回のテーマ「{topic}」は公式資料を2件以上取得できませんでした。"
+            "Windows、Chrome、Android、iPhone/iOS、macOS/Safari、"
+            "GitHub、ChatGPT/OpenAI、Gmail/Google Drive、OneDriveなど、"
+            "公式ヘルプが充実した製品の具体的な困りごとへ変更してください。"
+        )
+
+    if last:
+        raise last
+    raise RuntimeError("公式資料を2件以上取得できる記事テーマを選べませんでした")
 def strict_write_article(api_key, model, theme, memo, sources, titles, revision=""):
     if sources:
         evidence_rule = """
+- 事実の根拠は調査メモ内の official_evidence だけに限定する
+- official_evidence にない製品仕様、画面名、操作手順、挙動、数値を推測で補わない
+- 不明な点は断定せず、「環境により表示が異なる場合がある」と必要に応じて限定する
 - 本文末尾に必ず「## 参考情報」を作る
-- 提示された参照先から実際に使った2〜5件だけMarkdownリンクで載せる
+- 提示された公式参照先から実際に使った2〜5件だけMarkdownリンクで載せる
 - 提示されていないURLを作らない
 - 参照情報をそのまま写さず、自分の言葉で要約する
 """.strip()
@@ -230,8 +286,15 @@ def strict_critique(api_key, model, article, memo, sources, titles):
         if "## 参考情報" not in article["body"]:
             checks.append("参考情報セクションがない")
         refs = article["body"].split("## 参考情報", 1)[1] if "## 参考情報" in article["body"] else ""
-        if len(re.findall(r"https?://", refs)) < 2:
+        ref_urls = re.findall(r"https?://[^)\s>]+", refs)
+        if len(ref_urls) < 2:
             checks.append("参考リンクが2件未満")
+        allowed_urls = {s.get("url", "") for s in sources}
+        unknown_urls = [u for u in ref_urls if u not in allowed_urls]
+        if unknown_urls:
+            checks.append("公式調査で取得していないURLを参考情報に使用")
+        if "official_evidence" not in memo:
+            checks.append("公式資料本文の根拠が調査メモにない")
     else:
         risky_patterns = [
             (r"\d[\d,]*\s*円", "検索未確認なのに具体的な金額を記載"),
