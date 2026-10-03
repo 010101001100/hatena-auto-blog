@@ -430,6 +430,7 @@ JSONだけ:
     return passed, problems
 
 def strict_critique(api_key, model, article, memo, sources, titles):
+    grounded_ok = False
     passed, report, checks = _base_critique(
         api_key,
         model,
@@ -458,6 +459,7 @@ def strict_critique(api_key, model, article, memo, sources, titles):
             grounded, grounding_problems = grounding_audit(
                 api_key, model, article, memo
             )
+            grounded_ok = grounded
             if not grounded:
                 checks.extend(grounding_problems or ["公式資料との整合監査に不合格"])
     else:
@@ -487,7 +489,11 @@ def strict_critique(api_key, model, article, memo, sources, titles):
     )
     core_scores = [int(report.get(k, 0)) for k in core_score_keys]
     originality = int(report.get("originality", 0))
-    material_flag = bool(report.get("factual_risk")) or bool(report.get("topic_drift"))
+    # 公式資料との専用監査がPASSした場合、汎用編集AIの factual_risk は参考扱いにする。
+    # これにより、裏取り済み記事が主観的な慎重判定だけで落ち続けるのを防ぐ。
+    material_flag = bool(report.get("topic_drift")) or (
+        bool(report.get("factual_risk")) and not grounded_ok
+    )
 
     # 公式手順記事は「独自説」を足すほど事実性が落ちるため、
     # 独自性だけ3/5を合格基準にする。他の実用品質は4/5以上を維持。
