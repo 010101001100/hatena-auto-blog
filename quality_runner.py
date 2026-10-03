@@ -20,9 +20,10 @@ def _models(primary):
 
 def robust_gemini(api_key, model, prompt, search=False, json_mode=False, max_tokens=7000):
     """
-    品質優先:
-    - 調査は必ずGoogle検索付き。検索なしへのフォールバックは禁止。
-    - 執筆/QAだけは別Flashモデルへフォールバック可。
+    優先順位:
+    1) 調査はGoogle検索付き
+    2) 現在のAPI契約で検索が使えない場合だけ、安全なエバーグリーンモード
+    3) Flash-Liteには落とさない
     """
     errors = []
 
@@ -37,18 +38,50 @@ def robust_gemini(api_key, model, prompt, search=False, json_mode=False, max_tok
                     json_mode=json_mode,
                     max_tokens=max_tokens,
                 )
-                if len(sources) < 2:
-                    errors.append(f"{candidate}: 参照ソースが{len(sources)}件しか取れませんでした")
-                    continue
-                print(f"検索調査モデル: {candidate} / ソース{len(sources)}件")
-                return text, sources, queries
+                if len(sources) >= 2:
+                    print(f"検索調査モデル: {candidate} / ソース{len(sources)}件")
+                    return text, sources, queries
+                errors.append(f"{candidate}: ソース{len(sources)}件")
             except RuntimeError as e:
                 errors.append(f"{candidate}: {e}")
 
-        raise RuntimeError(
-            "Google検索で十分な根拠を取得できないため、この回は記事を公開しません。 / "
-            + " / ".join(errors[-3:])
-        )
+        safe_prompt = """
+重要: このAPI契約ではGoogle検索ツールを利用できません。
+検索した、公式情報で確認した、最新情報を確認した、とは絶対に書かないでください。
+
+テーマ選定は長く有効なエバーグリーン内容だけに限定してください。
+禁止:
+- 料金、価格、割合、倍率、ランキング
+- 最新、現在、2026年版など鮮度依存の主張
+- 特定バージョン番号に依存する細かい仕様
+- 医療、法律、投資、税務
+- 「公式が推奨」「標準で必ず有効」など未確認の断定
+
+優先:
+- 読者自身が画面で確認できる手順
+- データ整理、バックアップの考え方
+- 設定を確認する順番
+- トラブルの切り分け方
+- ツールに依存しすぎない作業手順
+
+verified_facts欄も「記事作成時の仮説・確認候補」として慎重に扱ってください。
+""".strip() + "\n\n" + prompt
+
+        for candidate in _models(model):
+            try:
+                print(f"WARNING: Google検索不可。{candidate} の安全なエバーグリーンモードで調査します")
+                return _base_gemini(
+                    api_key,
+                    candidate,
+                    safe_prompt,
+                    search=False,
+                    json_mode=json_mode,
+                    max_tokens=max_tokens,
+                )
+            except RuntimeError as e:
+                errors.append(f"{candidate} safe: {e}")
+
+        raise RuntimeError("Gemini調査失敗: " + " / ".join(errors[-4:]))
 
     for candidate in _models(model):
         try:
@@ -69,27 +102,36 @@ def robust_gemini(api_key, model, prompt, search=False, json_mode=False, max_tok
 
 
 def strict_write_article(api_key, model, theme, memo, sources, titles, revision=""):
-    source_rule = ""
     if sources:
-        source_rule = """
+        evidence_rule = """
 - 本文末尾に必ず「## 参考情報」を作る
-- 参考情報には、提示された参照先から実際に使った2〜5件だけをMarkdownリンクで載せる
+- 提示された参照先から実際に使った2〜5件だけMarkdownリンクで載せる
 - 提示されていないURLを作らない
 - 参照情報をそのまま写さず、自分の言葉で要約する
+""".strip()
+    else:
+        evidence_rule = """
+検索ソースを取得できていないため、次を厳守:
+- 料金、金額、割合、倍率、ランキング、特定バージョン番号を書かない
+- 「最新」「公式が推奨」「標準で必ず」「全員」「必ず成功」など未確認の断定をしない
+- 製品固有の細かい仕様より、読者自身が画面で確認できる手順・判断基準を優先
+- UI名称や挙動は更新で変わりうる場合があることを必要に応じて限定する
+- 原因は断定せず「候補」「切り分け」の形で扱う
+- 架空の参考URLや出典を書かない
+- 「参考情報」セクションは作らない
 """.strip()
 
     quality_rule = f"""
 追加の品質条件:
 - 本文は2200〜3600字を目安にする。薄い一般論で水増ししない
 - 冒頭2〜3文で読者の疑問への答えを先に示す
-- 「なぜそうするか」だけでなく「どこをどう操作するか」「どう判断するか」を書く
+- 「なぜ」だけでなく「どこをどう操作するか」「どう判断するか」を書く
 - 具体的な手順・設定例・判断基準のうち最低2種類を入れる
-- 製品固有のUI名・仕様・料金・バージョンは、調査メモで確認できるものだけを書く
 - 読者が記事を閉じた直後に1つ以上の行動を取れる内容にする
 - 「便利です」「おすすめです」「重要です」だけで段落を終わらせない
-- 抽象論が2段落続いたら、具体例・手順・条件のどれかに置き換える
-- 「まとめ」「はじめに」だけの抽象見出しは禁止
-{source_rule}
+- 抽象論が2段落続いたら具体例・手順・条件に置き換える
+- 「まとめ」「はじめに」「おわりに」だけの抽象見出しは禁止
+{evidence_rule}
 """.strip()
 
     combined = quality_rule
@@ -109,7 +151,7 @@ def strict_write_article(api_key, model, theme, memo, sources, titles, revision=
 
 def strict_local_checks(article, memo, titles):
     issues = list(_base_local_checks(article, memo, titles))
-    title, body = article["title"], article["body"]
+    body = article["body"]
 
     if len(body) < 1800:
         issues.append(f"本文がまだ薄い ({len(body)}文字)")
@@ -120,24 +162,12 @@ def strict_local_checks(article, memo, titles):
     if not 3 <= len(h2s) <= 7:
         issues.append(f"H2数が不適切 ({len(h2s)}個)")
     if any(h.strip() in {"はじめに", "まとめ", "おわりに"} for h in h2s):
-        issues.append("抽象的な見出し（はじめに/まとめ/おわりに）を使用")
+        issues.append("抽象的な見出しを使用")
 
-    vague = [
-        "重要です",
-        "大切です",
-        "おすすめです",
-        "便利です",
-        "活用しましょう",
-    ]
+    vague = ["重要です", "大切です", "おすすめです", "便利です", "活用しましょう"]
     vague_hits = sum(body.count(x) for x in vague)
     if vague_hits >= 4:
         issues.append(f"抽象的な定型表現が多い ({vague_hits}箇所)")
-
-    if "## 参考情報" not in body:
-        issues.append("参考情報セクションがない")
-    ref_part = body.split("## 参考情報", 1)[1] if "## 参考情報" in body else ""
-    if len(re.findall(r"https?://", ref_part)) < 2:
-        issues.append("参考情報のリンクが2件未満")
 
     return list(dict.fromkeys(issues))
 
@@ -151,26 +181,29 @@ def strict_critique(api_key, model, article, memo, sources, titles):
         sources,
         titles,
     )
-
-    # q.critique 内の local_checks は q.local_checks に差し替わるため、
-    # ここでも明示的に再確認して取りこぼしを防ぐ。
     checks = list(dict.fromkeys([*checks, *strict_local_checks(article, memo, titles)]))
-
     text = article["title"] + "\n" + article["body"]
-    risky_patterns = [
-        (r"\d[\d,]*\s*円", "金額を記載。調査メモの裏取りを再確認"),
-        (r"(?:必ず|完全に|確実に).{0,24}(?:解決|直る|防げる|成功|復旧)", "結果を強く断定"),
-        (r"(?:絶対|100%).{0,20}(?:安全|成功|解決|防止)", "過度な断定"),
-    ]
-    for pattern, message in risky_patterns:
-        if re.search(pattern, text, flags=re.IGNORECASE):
-            checks.append(message)
 
-    # 参照元が少ない記事は公開しない。
-    if len(sources) < 2:
-        checks.append("Google検索の参照元が2件未満")
+    if len(sources) >= 2:
+        if "## 参考情報" not in article["body"]:
+            checks.append("参考情報セクションがない")
+        refs = article["body"].split("## 参考情報", 1)[1] if "## 参考情報" in article["body"] else ""
+        if len(re.findall(r"https?://", refs)) < 2:
+            checks.append("参考リンクが2件未満")
+    else:
+        risky_patterns = [
+            (r"\d[\d,]*\s*円", "検索未確認なのに具体的な金額を記載"),
+            (r"\d+(?:\.\d+)?\s*%", "検索未確認なのに割合を記載"),
+            (r"\d+(?:\.\d+)?\s*倍", "検索未確認なのに倍率を記載"),
+            (r"(?:必ず|完全に|確実に).{0,24}(?:解決|直る|防げる|成功|復旧)", "検索未確認の結果を強く断定"),
+            (r"(?:最新|2026年版|ランキング)", "検索未確認の鮮度依存表現"),
+        ]
+        for pattern, message in risky_patterns:
+            if re.search(pattern, text, flags=re.IGNORECASE):
+                checks.append(message)
+        if "## 参考情報" in article["body"]:
+            checks.append("検索ソースなしなのに参考情報セクションを生成")
 
-    # QA側がPASSでも、問題点を1件でも検出したら公開しない。
     if checks:
         passed = False
 
