@@ -478,18 +478,25 @@ def strict_critique(api_key, model, article, memo, sources, titles):
 
     # 編集AIの最終ラベルより、数値評価＋重大リスク＋公式監査を優先する。
     # 軽微な文体上の好みだけで良記事を3回捨てるのを防ぐ。
-    score_keys = (
+    core_score_keys = (
         "intent_match",
         "specificity",
         "evidence",
         "structure",
         "usefulness",
-        "originality",
     )
-    scores = [int(report.get(k, 0)) for k in score_keys]
+    core_scores = [int(report.get(k, 0)) for k in core_score_keys]
+    originality = int(report.get("originality", 0))
     material_flag = bool(report.get("factual_risk")) or bool(report.get("topic_drift"))
 
-    if checks or material_flag or not all(s >= 4 for s in scores):
+    # 公式手順記事は「独自説」を足すほど事実性が落ちるため、
+    # 独自性だけ3/5を合格基準にする。他の実用品質は4/5以上を維持。
+    if (
+        checks
+        or material_flag
+        or not all(s >= 4 for s in core_scores)
+        or originality < 3
+    ):
         passed = False
     else:
         passed = True
