@@ -315,6 +315,8 @@ def strict_write_article(api_key, model, theme, memo, sources, titles, revision=
 - 「便利です」「おすすめです」「重要です」だけで段落を終わらせない
 - 抽象論が2段落続いたら具体例・手順・条件に置き換える
 - 「まとめ」「はじめに」「おわりに」だけの抽象見出しは禁止
+- タイトルは説明的で自然にする。「うざい！」「徹底解説」「完全版」「設定術」「必見」など煽り・SEO量産風の語は禁止
+- タイトルで同じ意味を重ねない（例: 「方法と設定変更手順」）
 {evidence_rule}
 """.strip()
 
@@ -336,7 +338,15 @@ def strict_write_article(api_key, model, theme, memo, sources, titles, revision=
 
 def strict_local_checks(article, memo, titles):
     issues = list(_base_local_checks(article, memo, titles))
+    title = article["title"]
     body = article["body"]
+
+    title_banned = ["うざい", "徹底解説", "完全版", "設定術", "必見"]
+    for phrase in title_banned:
+        if phrase in title:
+            issues.append(f"SEO量産風タイトル: {phrase}")
+    if "方法と設定変更手順" in title or "方法と手順" in title:
+        issues.append("タイトルが意味重複")
 
     if len(body) < 1300:
         issues.append(f"本文がまだ薄い ({len(body)}文字)")
@@ -464,10 +474,27 @@ def strict_critique(api_key, model, article, memo, sources, titles):
         if "## 参考情報" in article["body"]:
             checks.append("検索ソースなしなのに参考情報セクションを生成")
 
-    if checks:
-        passed = False
+    checks = list(dict.fromkeys(checks))
 
-    return passed, report, list(dict.fromkeys(checks))
+    # 編集AIの最終ラベルより、数値評価＋重大リスク＋公式監査を優先する。
+    # 軽微な文体上の好みだけで良記事を3回捨てるのを防ぐ。
+    score_keys = (
+        "intent_match",
+        "specificity",
+        "evidence",
+        "structure",
+        "usefulness",
+        "originality",
+    )
+    scores = [int(report.get(k, 0)) for k in score_keys]
+    material_flag = bool(report.get("factual_risk")) or bool(report.get("topic_drift"))
+
+    if checks or material_flag or not all(s >= 4 for s in scores):
+        passed = False
+    else:
+        passed = True
+
+    return passed, report, checks
 
 
 q.gemini = robust_gemini
