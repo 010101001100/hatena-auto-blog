@@ -186,6 +186,7 @@ JSONだけ:
   "topic":"公式資料で説明可能な具体テーマ",
   "working_title":"18〜42文字の仮タイトル",
   "pillar":"PC設定・トラブル解決 / スマホ設定・データ整理 / Webサービス・AIツール活用 / バックアップ・ファイル管理 / 個人の作業効率化 のどれか",
+  "platform":"PC版Chrome / Android版Chrome / Windows / iPhone / Mac など1つだけ",
   "reader":"対象読者",
   "search_intent":"読み終わった時にできること",
   "answer_first":"最初に伝える答え",
