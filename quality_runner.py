@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import sys
@@ -8,6 +9,7 @@ _base_gemini = q.gemini
 _base_write_article = q.write_article
 _base_critique = q.critique
 _base_local_checks = q.local_checks
+_base_research = q.research
 
 FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.1-flash-lite"]
 _LAST_CALL = 0.0
@@ -123,6 +125,24 @@ verified_facts欄も「記事作成時の仮説・確認候補」として慎重
 
     raise RuntimeError("Gemini API失敗: " + " / ".join(errors[-3:]))
 
+
+def retry_research(api_key, model, theme, titles, reject=""):
+    last = None
+    for attempt in range(3):
+        try:
+            extra_reject = reject
+            if attempt:
+                extra_reject = (
+                    reject
+                    + "\n前回はJSON形式が壊れました。改行を含む文字列は正しくJSONエスケープし、"
+                    + "JSONオブジェクト以外を一切出力しないでください。"
+                )
+            return _base_research(api_key, model, theme, titles, extra_reject)
+        except (json.JSONDecodeError, ValueError) as e:
+            last = e
+            print(f"WARNING: 調査JSONの解析に失敗。再生成します ({attempt + 1}/3): {e}")
+    raise last
+
 def strict_write_article(api_key, model, theme, memo, sources, titles, revision=""):
     if sources:
         evidence_rule = """
@@ -233,6 +253,7 @@ def strict_critique(api_key, model, article, memo, sources, titles):
 
 
 q.gemini = robust_gemini
+q.research = retry_research
 q.write_article = strict_write_article
 q.local_checks = strict_local_checks
 q.critique = strict_critique
