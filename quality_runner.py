@@ -42,7 +42,7 @@ def robust_gemini(api_key, model, prompt, search=False, json_mode=False, max_tok
     """
     通常は3.8 Flashの安全モードを使用。
     USE_GOOGLE_SEARCH=true の時だけ検索グラウンディングを試す。
-    Flash-Liteには落とさない。
+    高品質Flashを優先し、必要時のみ現行Flash-Liteへフォールバックする。
     """
     errors = []
 
@@ -133,7 +133,13 @@ def retry_research(api_key, model, theme, titles, reject=""):
     その後、公式ドメインを外部検索し、本文を取得できた公式資料が2件以上あるテーマだけ採用する。
     """
     last = None
-    accumulated_reject = reject
+    accumulated_reject = (
+        reject
+        + "\nテーマは必ず、公式ヘルプ文書が豊富な製品・サービスから選んでください。"
+        + "対象候補: Windows、Chrome、Android、iPhone/iOS、macOS/Safari、"
+        + "GitHub、ChatGPT/OpenAI、Gmail/Google Drive、OneDrive。"
+        + "公式ヘルプで操作手順を確認できない題材は禁止です。"
+    )
 
     for topic_attempt in range(3):
         data = None
@@ -162,7 +168,7 @@ def retry_research(api_key, model, theme, titles, reject=""):
 
         topic = data.get("topic", "")
         print(f"公式情報を検索: {topic}")
-        official = search_official(topic, max_sources=4)
+        official = search_official(topic, max_sources=3)
 
         if len(official) >= 2:
             data["verified_facts"] = []
@@ -270,6 +276,58 @@ def strict_local_checks(article, memo, titles):
     return list(dict.fromkeys(issues))
 
 
+
+def grounding_audit(api_key, model, article, memo):
+    evidence = memo.get("official_evidence", "")
+    if not evidence:
+        return False, ["公式資料本文がありません"]
+
+    prompt = f"""
+あなたはファクトチェック専任編集者です。
+次の「公式資料の抜粋」だけを根拠に、記事内の製品仕様・画面名・操作手順・挙動・注意点を監査してください。
+一般知識やあなた自身の記憶は根拠に使わないでください。
+
+【公式資料の抜粋】
+{evidence}
+
+【監査対象記事】
+タイトル: {article['title']}
+本文:
+{article['body']}
+
+判定ルール:
+- 公式資料の抜粋から直接確認できる、または自然に言い換えた内容はSUPPORTED
+- 公式資料にない具体的な画面名、ボタン名、手順、仕様、効果、リスクはUNSUPPORTED
+- 公式資料と食い違う内容はCONFLICT
+- 一般的な文章表現や読者への案内は監査対象外
+- UNSUPPORTEDまたはCONFLICTが1件でもあれば pass=false
+- 厳しめに判定する
+
+JSONだけを返してください:
+{
+  "pass": true,
+  "unsupported": ["未裏付けの主張"],
+  "conflicts": ["公式資料と矛盾する主張"]
+}
+""".strip()
+
+    text, _, _ = robust_gemini(
+        api_key,
+        model,
+        prompt,
+        search=False,
+        json_mode=True,
+        max_tokens=3000,
+    )
+    report = q.parse_json(text)
+    unsupported = [x for x in report.get("unsupported", []) if isinstance(x, str)]
+    conflicts = [x for x in report.get("conflicts", []) if isinstance(x, str)]
+    passed = bool(report.get("pass")) and not unsupported and not conflicts
+    problems = []
+    problems.extend(f"公式資料で裏付け不可: {x}" for x in unsupported[:6])
+    problems.extend(f"公式資料と矛盾: {x}" for x in conflicts[:6])
+    return passed, problems
+
 def strict_critique(api_key, model, article, memo, sources, titles):
     passed, report, checks = _base_critique(
         api_key,
@@ -295,6 +353,12 @@ def strict_critique(api_key, model, article, memo, sources, titles):
             checks.append("公式調査で取得していないURLを参考情報に使用")
         if "official_evidence" not in memo:
             checks.append("公式資料本文の根拠が調査メモにない")
+        else:
+            grounded, grounding_problems = grounding_audit(
+                api_key, model, article, memo
+            )
+            if not grounded:
+                checks.extend(grounding_problems or ["公式資料との整合監査に不合格"])
     else:
         risky_patterns = [
             (r"\d[\d,]*\s*円", "検索未確認なのに具体的な金額を記載"),
