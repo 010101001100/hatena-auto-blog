@@ -228,7 +228,7 @@ def write_article(api_key, model, theme, memo, sources, titles, revision=""):
 ルール:
 - 冒頭2〜4文で先に答えを書く。長い前置きは禁止
 - 1記事1検索意図。テーマを広げない
-- 1600〜3000字を目安に、必要な分だけ書く
+- 1400〜2600字を目安に、必要な分だけ書く
 - H2を3〜6個。必要ならH3を使う
 - 3手順以上は番号付きリスト。条件分岐や比較は表か箇条書き
 - 画面名、設定名、操作順、判断基準など再現可能な情報を優先
@@ -257,7 +257,7 @@ def local_checks(article, memo, titles):
     issues = []
     if not 14 <= len(title) <= 48:
         issues.append(f"タイトル長 {len(title)}文字")
-    if not 1500 <= len(body) <= 4200:
+    if not 1200 <= len(body) <= 4200:
         issues.append(f"本文長 {len(body)}文字")
     if len(re.findall(r"^## ", body, flags=re.MULTILINE)) < 3:
         issues.append("H2が3個未満")
