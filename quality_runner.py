@@ -304,11 +304,11 @@ def grounding_audit(api_key, model, article, memo):
 - 厳しめに判定する
 
 JSONだけを返してください:
-{
+{{
   "pass": true,
   "unsupported": ["未裏付けの主張"],
   "conflicts": ["公式資料と矛盾する主張"]
-}
+}}
 """.strip()
 
     text, _, _ = robust_gemini(
