@@ -40,16 +40,17 @@ jobs:
 
       - name: Research, write, review and publish
         env:
-          GEMINI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          HATENA_ID: ${{ secrets.HATENA_ID }}
-          HATENA_BLOG_ID: ${{ secrets.HATENA_BLOG_ID }}
-          HATENA_API_KEY: ${{ secrets.HATENA_API_KEY }}
+          GEMINI_API_KEY: \${{ secrets.GEMINI_API_KEY || secrets.OPENAI_API_KEY }}
+          HATENA_ID: \${{ secrets.HATENA_ID }}
+          HATENA_BLOG_ID: \${{ secrets.HATENA_BLOG_ID }}
+          HATENA_API_KEY: \${{ secrets.HATENA_API_KEY }}
 
-          BLOG_THEME: ${{ vars.BLOG_THEME }}
-          RESEARCH_MODEL: "gemini-3.5-flash"
-          WRITER_MODEL: "gemini-3.5-flash"
-          CRITIC_MODEL: "gemini-3.5-flash"
+          BLOG_THEME: \${{ vars.BLOG_THEME }}
+          RESEARCH_MODEL: "gemini-3.8-flash"
+          WRITER_MODEL: "gemini-3.8-flash"
+          CRITIC_MODEL: "gemini-3.8-flash"
 
           HATENA_DRAFT: "false"
-          DRY_RUN: ${{ github.event_name == 'push' && 'true' || 'false' }}
+          # push時は品質テストだけ。定期実行/手動実行だけ公開する。
+          DRY_RUN: \${{ github.event_name == 'push' && 'true' || 'false' }}
         run: python quality_entry.py
