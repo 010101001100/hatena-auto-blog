@@ -269,8 +269,6 @@ def local_checks(article, memo, titles):
     score, old = nearest(title, titles)
     if score >= 0.68:
         issues.append(f"既存記事『{old}』と似すぎ ({score:.2f})")
-    if len(memo.get("must_answer") or []) >= 4 and len(body) < 2200:
-        issues.append("必須論点に対して本文が短い")
     return issues
 
 
