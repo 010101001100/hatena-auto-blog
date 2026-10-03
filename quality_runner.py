@@ -4,7 +4,7 @@ import re
 import sys
 import time
 import quality_v2 as q
-from official_sources import search_official, source_summary_for_prompt
+from official_sources import TOPIC_SEEDS, search_official_query, source_summary_for_prompt
 
 _base_gemini = q.gemini
 _base_write_article = q.write_article
@@ -129,79 +129,122 @@ verified_facts欄も「記事作成時の仮説・確認候補」として慎重
 
 def retry_research(api_key, model, theme, titles, reject=""):
     """
-    AIはテーマ候補だけ作る。
-    その後、公式ドメインを外部検索し、本文を取得できた公式資料が2件以上あるテーマだけ採用する。
+    先に公式資料を取得できるテーマ候補を選び、
+    その公式資料だけを読ませて記事企画を作る。
     """
-    last = None
-    accumulated_reject = (
-        reject
-        + "\nテーマは必ず、公式ヘルプ文書が豊富な製品・サービスから選んでください。"
-        + "対象候補: Windows、Chrome、Android、iPhone/iOS、macOS/Safari、"
-        + "GitHub、ChatGPT/OpenAI、Gmail/Google Drive、OneDrive。"
-        + "公式ヘルプで操作手順を確認できない題材は禁止です。"
-    )
-
-    for topic_attempt in range(3):
-        data = None
-        for json_attempt in range(3):
-            try:
-                extra_reject = accumulated_reject
-                if json_attempt:
-                    extra_reject = (
-                        accumulated_reject
-                        + "\n前回はJSON形式が壊れました。改行を含む文字列は正しくJSONエスケープし、"
-                        + "JSONオブジェクト以外を一切出力しないでください。"
-                    )
-                data, _, queries = _base_research(
-                    api_key, model, theme, titles, extra_reject
-                )
-                break
-            except (json.JSONDecodeError, ValueError) as e:
-                last = e
-                print(
-                    f"WARNING: 調査JSONの解析に失敗。再生成します "
-                    f"({json_attempt + 1}/3): {e}"
-                )
-
-        if not data:
+    for seed in TOPIC_SEEDS:
+        seed_score, _ = q.nearest(seed["label"], titles)
+        if seed_score >= 0.58:
+            continue
+        if seed["label"] in reject:
             continue
 
-        topic = data.get("topic", "")
-        print(f"公式情報を検索: {topic}")
-        official = search_official(topic, max_sources=3)
-
-        if len(official) >= 2:
-            data["verified_facts"] = []
-            data["pitfalls"] = []
-            data["hands_on"] = []
-            data["official_evidence"] = source_summary_for_prompt(official)
-            data["grounding_rule"] = (
-                "記事中の製品仕様、画面名、操作手順、挙動、注意点は"
-                "official_evidenceに明記された内容だけを事実として扱う。"
-                "公式資料にないことは断定しない。"
-            )
-            sources = [
-                {
-                    "title": src["title"],
-                    "url": src["url"],
-                    "domain": src.get("domain", ""),
-                }
-                for src in official
-            ]
-            print(f"公式資料を{len(sources)}件取得")
-            return data, sources, queries
-
-        print(f"WARNING: 公式資料が{len(official)}件しか取れませんでした。テーマを変更します")
-        accumulated_reject += (
-            f"\n前回のテーマ「{topic}」は公式資料を2件以上取得できませんでした。"
-            "Windows、Chrome、Android、iPhone/iOS、macOS/Safari、"
-            "GitHub、ChatGPT/OpenAI、Gmail/Google Drive、OneDriveなど、"
-            "公式ヘルプが充実した製品の具体的な困りごとへ変更してください。"
+        print(f"公式テーマ候補: {seed['label']}")
+        official = search_official_query(
+            seed["query"],
+            seed["domains"],
+            max_sources=3,
         )
+        if len(official) < 2:
+            print(
+                f"WARNING: 「{seed['label']}」は公式資料が"
+                f"{len(official)}件しか取れないためスキップ"
+            )
+            continue
 
-    if last:
-        raise last
-    raise RuntimeError("公式資料を2件以上取得できる記事テーマを選べませんでした")
+        evidence = source_summary_for_prompt(official)
+        plan_prompt = f"""
+あなたは実用系Webメディアの編集者です。
+以下の公式資料だけを読み、1本の記事企画を作ってください。
+あなた自身の記憶や一般知識を事実の根拠に使ってはいけません。
+
+ブログ方針:
+{theme}
+
+記事候補:
+{seed['label']}
+
+公式資料:
+{evidence}
+
+最近の記事:
+{chr(10).join(f"- {t}" for t in titles[:30]) or "- なし"}
+
+条件:
+- 公式資料で十分説明できる範囲だけを記事テーマにする
+- 公式資料にない高度なトラブルシューティングへ広げない
+- 読者が実際に操作できる具体的なテーマにする
+- 1記事1検索意図
+- 公式資料にない画面名・手順・仕様・効果を作らない
+- 料金、ランキング、口コミ、推測は扱わない
+- 最近の記事の焼き直しにしない
+
+JSONだけ:
+{{
+  "topic":"公式資料で説明可能な具体テーマ",
+  "working_title":"18〜42文字の仮タイトル",
+  "pillar":"PC設定・トラブル解決 / スマホ設定・データ整理 / Webサービス・AIツール活用 / バックアップ・ファイル管理 / 個人の作業効率化 のどれか",
+  "reader":"対象読者",
+  "search_intent":"読み終わった時にできること",
+  "answer_first":"最初に伝える答え",
+  "must_answer":["公式資料から答えられる論点を3〜6個"],
+  "verified_facts":["公式資料で直接確認できる事実を3〜8個"],
+  "pitfalls":["公式資料で確認できる注意点"],
+  "hands_on":["公式資料で確認できる操作手順"],
+  "avoid_claims":["公式資料にないため書かない内容"]
+}}
+""".strip()
+
+        data = None
+        for attempt in range(2):
+            try:
+                text, _, _ = robust_gemini(
+                    api_key,
+                    model,
+                    plan_prompt,
+                    search=False,
+                    json_mode=True,
+                    max_tokens=4000,
+                )
+                data = q.parse_json(text)
+                break
+            except (json.JSONDecodeError, ValueError) as e:
+                print(f"WARNING: 公式企画JSONを再生成します: {e}")
+                plan_prompt += (
+                    "\nJSON文字列内の改行や引用符を正しくエスケープし、"
+                    "JSONオブジェクト以外を出力しないでください。"
+                )
+
+        if not data or not data.get("topic") or not data.get("working_title"):
+            continue
+
+        title_score, old = q.nearest(data["working_title"], titles)
+        if title_score >= 0.60:
+            print(
+                f"WARNING: 企画タイトルが既存記事「{old}」と似すぎ "
+                f"({title_score:.2f}) のため次候補へ"
+            )
+            continue
+
+        data["official_evidence"] = evidence
+        data["official_seed"] = seed["label"]
+        data["grounding_rule"] = (
+            "記事中の製品仕様、画面名、操作手順、挙動、注意点は"
+            "official_evidenceに明記された内容だけを事実として扱う。"
+            "公式資料にないことは書かない。"
+        )
+        sources = [
+            {
+                "title": src["title"],
+                "url": src["url"],
+                "domain": src.get("domain", ""),
+            }
+            for src in official
+        ]
+        print(f"公式資料を{len(sources)}件取得して企画化")
+        return data, sources, [seed["query"]]
+
+    raise RuntimeError("最近の記事と重複せず、公式資料を2件以上取得できるテーマがありません")
 def strict_write_article(api_key, model, theme, memo, sources, titles, revision=""):
     if sources:
         evidence_rule = """
@@ -227,7 +270,7 @@ def strict_write_article(api_key, model, theme, memo, sources, titles, revision=
 
     quality_rule = f"""
 追加の品質条件:
-- 本文は2200〜3600字を目安にする。薄い一般論で水増ししない
+- 本文は1600〜2800字を目安にする。公式資料で言えることが少ない場合は無理に長くしない
 - 冒頭2〜3文で読者の疑問への答えを先に示す
 - 「なぜ」だけでなく「どこをどう操作するか」「どう判断するか」を書く
 - 具体的な手順・設定例・判断基準のうち最低2種類を入れる
@@ -257,9 +300,9 @@ def strict_local_checks(article, memo, titles):
     issues = list(_base_local_checks(article, memo, titles))
     body = article["body"]
 
-    if len(body) < 1800:
+    if len(body) < 1400:
         issues.append(f"本文がまだ薄い ({len(body)}文字)")
-    if len(body) > 4600:
+    if len(body) > 3600:
         issues.append(f"本文が冗長 ({len(body)}文字)")
 
     h2s = re.findall(r"(?m)^##\s+(.+)$", body)
