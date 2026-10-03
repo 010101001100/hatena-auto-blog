@@ -9,7 +9,7 @@ _base_write_article = q.write_article
 _base_critique = q.critique
 _base_local_checks = q.local_checks
 
-FALLBACK_MODELS = ["gemini-3.7-flash", "gemini-3.5-flash"]
+FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash"]
 _LAST_CALL = 0.0
 
 
