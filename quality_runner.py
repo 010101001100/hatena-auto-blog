@@ -5,92 +5,181 @@ import quality_v2 as q
 _base_gemini = q.gemini
 _base_write_article = q.write_article
 _base_critique = q.critique
-FALLBACK_MODEL = "gemini-3.5-flash-lite"
+_base_local_checks = q.local_checks
+
+FALLBACK_MODELS = ["gemini-3.7-flash", "gemini-3.5-flash"]
+
+
+def _models(primary):
+    out = []
+    for model in [primary, *FALLBACK_MODELS]:
+        if model and model not in out:
+            out.append(model)
+    return out
 
 
 def robust_gemini(api_key, model, prompt, search=False, json_mode=False, max_tokens=7000):
+    """
+    品質優先:
+    - 調査は必ずGoogle検索付き。検索なしへのフォールバックは禁止。
+    - 執筆/QAだけは別Flashモデルへフォールバック可。
+    """
     errors = []
-    try:
-        return _base_gemini(api_key, model, prompt, search=search, json_mode=json_mode, max_tokens=max_tokens)
-    except RuntimeError as e:
-        errors.append(f"{model} search={search}: {e}")
 
     if search:
-        no_search_prompt = (
-            "重要: この実行ではGoogle検索ツールを利用できません。検索したと主張しないでください。"
-            "料金、価格、バージョン番号、割合、倍率、最新仕様など変わりやすい具体値は扱わず、"
-            "長く有効な操作原則・整理方法・確認手順を中心にしてください。"
-            "『公式情報で確認した』などの表現も禁止です。\n\n" + prompt
-        )
-        try:
-            print(f"WARNING: {model} の検索グラウンディングが使えないため検索なしで再試行します")
-            return _base_gemini(api_key, model, no_search_prompt, search=False, json_mode=json_mode, max_tokens=max_tokens)
-        except RuntimeError as e:
-            errors.append(f"{model} search=False: {e}")
+        for candidate in _models(model):
+            try:
+                text, sources, queries = _base_gemini(
+                    api_key,
+                    candidate,
+                    prompt,
+                    search=True,
+                    json_mode=json_mode,
+                    max_tokens=max_tokens,
+                )
+                if len(sources) < 2:
+                    errors.append(f"{candidate}: 参照ソースが{len(sources)}件しか取れませんでした")
+                    continue
+                print(f"検索調査モデル: {candidate} / ソース{len(sources)}件")
+                return text, sources, queries
+            except RuntimeError as e:
+                errors.append(f"{candidate}: {e}")
 
-    if model != FALLBACK_MODEL:
-        fallback_prompt = (
-            "品質優先。一般論の水増しを避け、再現可能な手順と判断基準を書いてください。"
-            "不明な仕様、料金、数値、バージョン情報は絶対に作らないでください。\n\n" + prompt
+        raise RuntimeError(
+            "Google検索で十分な根拠を取得できないため、この回は記事を公開しません。 / "
+            + " / ".join(errors[-3:])
         )
-        try:
-            print(f"WARNING: {model} が利用できないため {FALLBACK_MODEL} にフォールバックします")
-            return _base_gemini(api_key, FALLBACK_MODEL, fallback_prompt, search=False, json_mode=json_mode, max_tokens=max_tokens)
-        except RuntimeError as e:
-            errors.append(f"{FALLBACK_MODEL}: {e}")
 
-    raise RuntimeError(" / ".join(errors[-3:]))
+    for candidate in _models(model):
+        try:
+            if candidate != model:
+                print(f"WARNING: {model} が使えないため {candidate} にフォールバックします")
+            return _base_gemini(
+                api_key,
+                candidate,
+                prompt,
+                search=False,
+                json_mode=json_mode,
+                max_tokens=max_tokens,
+            )
+        except RuntimeError as e:
+            errors.append(f"{candidate}: {e}")
+
+    raise RuntimeError("Gemini API失敗: " + " / ".join(errors[-3:]))
 
 
 def strict_write_article(api_key, model, theme, memo, sources, titles, revision=""):
-    if not sources:
-        extra = """
-この実行では検索ソースを取得できていません。次を厳守してください。
-- 「無料」「有料」「○円」「○%」「○倍」など変わりうる具体値を書かない
-- OSやアプリの特定バージョン番号を根拠なしに書かない
-- 「公式」「標準採用」など、確認済みを装う断定を避ける
-- 「必ず」「完全に」「確実に」「極めて高い」のような絶対表現を使わない
-- 「全員がログアウトする」「すべて消える」など結果を一律に断定しない
-- 調査メモ内の verified_facts も未検証の参考候補として扱う
-- 製品固有の細かい仕様より、ユーザー自身が画面で確認できる手順・判断基準を優先する
-- UI名称や挙動は「環境や更新状況により異なる場合があります」と必要に応じて限定する
-- 原因の切り分けは「可能性が高まる」「候補になる」のように慎重に書く
+    source_rule = ""
+    if sources:
+        source_rule = """
+- 本文末尾に必ず「## 参考情報」を作る
+- 参考情報には、提示された参照先から実際に使った2〜5件だけをMarkdownリンクで載せる
+- 提示されていないURLを作らない
+- 参照情報をそのまま写さず、自分の言葉で要約する
 """.strip()
-        revision = (revision + "\n\n" + extra).strip()
-    return _base_write_article(api_key, model, theme, memo, sources, titles, revision)
+
+    quality_rule = f"""
+追加の品質条件:
+- 本文は2200〜3600字を目安にする。薄い一般論で水増ししない
+- 冒頭2〜3文で読者の疑問への答えを先に示す
+- 「なぜそうするか」だけでなく「どこをどう操作するか」「どう判断するか」を書く
+- 具体的な手順・設定例・判断基準のうち最低2種類を入れる
+- 製品固有のUI名・仕様・料金・バージョンは、調査メモで確認できるものだけを書く
+- 読者が記事を閉じた直後に1つ以上の行動を取れる内容にする
+- 「便利です」「おすすめです」「重要です」だけで段落を終わらせない
+- 抽象論が2段落続いたら、具体例・手順・条件のどれかに置き換える
+- 「まとめ」「はじめに」だけの抽象見出しは禁止
+{source_rule}
+""".strip()
+
+    combined = quality_rule
+    if revision:
+        combined += "\n\n前稿への修正指示:\n" + revision
+
+    return _base_write_article(
+        api_key,
+        model,
+        theme,
+        memo,
+        sources,
+        titles,
+        combined,
+    )
+
+
+def strict_local_checks(article, memo, titles):
+    issues = list(_base_local_checks(article, memo, titles))
+    title, body = article["title"], article["body"]
+
+    if len(body) < 1800:
+        issues.append(f"本文がまだ薄い ({len(body)}文字)")
+    if len(body) > 4600:
+        issues.append(f"本文が冗長 ({len(body)}文字)")
+
+    h2s = re.findall(r"(?m)^##\s+(.+)$", body)
+    if not 3 <= len(h2s) <= 7:
+        issues.append(f"H2数が不適切 ({len(h2s)}個)")
+    if any(h.strip() in {"はじめに", "まとめ", "おわりに"} for h in h2s):
+        issues.append("抽象的な見出し（はじめに/まとめ/おわりに）を使用")
+
+    vague = [
+        "重要です",
+        "大切です",
+        "おすすめです",
+        "便利です",
+        "活用しましょう",
+    ]
+    vague_hits = sum(body.count(x) for x in vague)
+    if vague_hits >= 4:
+        issues.append(f"抽象的な定型表現が多い ({vague_hits}箇所)")
+
+    if "## 参考情報" not in body:
+        issues.append("参考情報セクションがない")
+    ref_part = body.split("## 参考情報", 1)[1] if "## 参考情報" in body else ""
+    if len(re.findall(r"https?://", ref_part)) < 2:
+        issues.append("参考情報のリンクが2件未満")
+
+    return list(dict.fromkeys(issues))
 
 
 def strict_critique(api_key, model, article, memo, sources, titles):
-    passed, report, checks = _base_critique(api_key, model, article, memo, sources, titles)
+    passed, report, checks = _base_critique(
+        api_key,
+        model,
+        article,
+        memo,
+        sources,
+        titles,
+    )
 
-    if not sources:
-        text = article["title"] + "\n" + article["body"]
-        risky_patterns = [
-            (r"(?:無料|有料|料金|価格)", "検索未確認なのに料金・無料/有料を断定"),
-            (r"\d[\d,]*\s*円", "検索未確認なのに具体的な金額を記載"),
-            (r"\d+(?:\.\d+)?\s*%", "検索未確認なのに割合を記載"),
-            (r"\d+(?:\.\d+)?\s*倍", "検索未確認なのに倍率を記載"),
-            (r"(?:必ず|完全に|確実に).{0,24}(?:解決|直る|防げる|防止|成功|失敗|消える|削除される|ログアウト|復旧|表示される)", "検索未確認の結果を強く断定"),
-            (r"(?:原因|可能性).{0,24}極めて高い", "検索未確認の原因推定を強く断定"),
-            (r"すべてのサイトからログアウト", "サイトデータ削除の影響を一律に断定"),
-            (r"二段階認証の再設定", "ログアウトと二段階認証の再設定を混同している可能性"),
-        ]
-        for pattern, message in risky_patterns:
-            if re.search(pattern, text, flags=re.IGNORECASE):
-                checks.append(message)
+    # q.critique 内の local_checks は q.local_checks に差し替わるため、
+    # ここでも明示的に再確認して取りこぼしを防ぐ。
+    checks = list(dict.fromkeys([*checks, *strict_local_checks(article, memo, titles)]))
 
-        for phrase in ("公式の無料", "標準採用", "ファイルサイズが約"):
-            if phrase in text:
-                checks.append(f"検索未確認の断定表現: {phrase}")
+    text = article["title"] + "\n" + article["body"]
+    risky_patterns = [
+        (r"\d[\d,]*\s*円", "金額を記載。調査メモの裏取りを再確認"),
+        (r"(?:必ず|完全に|確実に).{0,24}(?:解決|直る|防げる|成功|復旧)", "結果を強く断定"),
+        (r"(?:絶対|100%).{0,20}(?:安全|成功|解決|防止)", "過度な断定"),
+    ]
+    for pattern, message in risky_patterns:
+        if re.search(pattern, text, flags=re.IGNORECASE):
+            checks.append(message)
 
-        if checks:
-            passed = False
+    # 参照元が少ない記事は公開しない。
+    if len(sources) < 2:
+        checks.append("Google検索の参照元が2件未満")
 
-    return passed, report, checks
+    # QA側がPASSでも、問題点を1件でも検出したら公開しない。
+    if checks:
+        passed = False
+
+    return passed, report, list(dict.fromkeys(checks))
 
 
 q.gemini = robust_gemini
 q.write_article = strict_write_article
+q.local_checks = strict_local_checks
 q.critique = strict_critique
 
 if __name__ == "__main__":
