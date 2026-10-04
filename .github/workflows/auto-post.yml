@@ -55,5 +55,5 @@ jobs:
           DRAFTS_PER_TOPIC: "2"
 
           HATENA_DRAFT: "false"
-          DRY_RUN: ${{ github.event_name == 'push' && 'true' || 'false' }}
+          DRY_RUN: "false"
         run: python quality_entry.py
