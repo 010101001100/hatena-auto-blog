@@ -127,6 +127,70 @@ verified_facts欄も「記事作成時の仮説・確認候補」として慎重
     raise RuntimeError("Gemini API失敗: " + " / ".join(errors[-3:]))
 
 
+def _seed_group(seed):
+    label = (seed.get("label") or "").lower()
+    if "yt-dlp" in label:
+        return "yt-dlp"
+    if "ffmpeg" in label or "ffprobe" in label:
+        return "ffmpeg"
+    if "python" in label or "pip" in label or "venv" in label or "requirements.txt" in label:
+        return "python"
+    if "powershell" in label or "winget" in label or "windowsで環境変数" in label:
+        return "powershell"
+    if "github" in label:
+        return "github"
+    if label.startswith("git") or " git" in label:
+        return "git"
+    if "vs code" in label:
+        return "vscode"
+    if "docker" in label:
+        return "docker"
+    return "other"
+
+
+def _diversified_seeds(titles):
+    buckets = {}
+    for seed in _diversified_seeds(titles):
+        buckets.setdefault(_seed_group(seed), []).append(seed)
+
+    # 直近8記事に登場したツール群は後回しにする。
+    # 同じツールの記事が連続し続けるのを防ぎつつ、候補自体は捨てない。
+    recent = "\n".join(titles[:8]).lower()
+    recent_hits = {
+        group: sum(
+            1
+            for token in {
+                "yt-dlp": ["yt-dlp"],
+                "ffmpeg": ["ffmpeg", "ffprobe"],
+                "python": ["python", "pip", "venv", "requirements"],
+                "powershell": ["powershell", "winget"],
+                "github": ["github"],
+                "git": ["git "],
+                "vscode": ["vs code", "vscode"],
+                "docker": ["docker"],
+                "other": [],
+            }.get(group, [])
+            if token in recent
+        )
+        for group in buckets
+    }
+
+    group_order = sorted(
+        buckets,
+        key=lambda g: (recent_hits.get(g, 0), list(buckets).index(g)),
+    )
+
+    # 1カテゴリを全部消化してから次へ進むのではなく、
+    # 各カテゴリから1件ずつラウンドロビンで試す。
+    ordered = []
+    max_len = max((len(v) for v in buckets.values()), default=0)
+    for i in range(max_len):
+        for group in group_order:
+            if i < len(buckets[group]):
+                ordered.append(buckets[group][i])
+    return ordered
+
+
 def retry_research(api_key, model, theme, titles, reject=""):
     """
     先に公式資料を取得できるテーマ候補を選び、
