@@ -346,40 +346,128 @@ def main():
     critic_model = env("CRITIC_MODEL", "gemini-3.8-flash") or "gemini-3.8-flash"
     draft, dry_run = flag("HATENA_DRAFT", False), flag("DRY_RUN", False)
 
+    max_topic_attempts = max(1, int(env("MAX_TOPIC_ATTEMPTS", "5") or "5"))
+    drafts_per_topic = max(1, int(env("DRAFTS_PER_TOPIC", "2") or "2"))
+
     url = endpoint(hatena_id, blog_id)
     titles = recent_titles(url, hatena_id, hatena_key, 50)
     print(f"最近の記事: {len(titles)}件")
-    memo, sources, queries = unique_research(key, research_model, theme, titles)
-    print(f"採用テーマ: {memo['topic']}")
-    print(f"検索クエリ数: {len(queries)} / 参照ソース数: {len(sources)}")
+    print(
+        f"投稿成功まで再挑戦: 最大{max_topic_attempts}テーマ / "
+        f"各テーマ最大{drafts_per_topic}稿"
+    )
 
-    revision = ""
-    article = None
-    for attempt in range(1, 4):
-        article = write_article(key, writer_model, theme, memo, sources, titles, revision)
-        passed, report, checks = critique(key, critic_model, article, memo, sources, titles)
-        keys = ("intent_match", "specificity", "evidence", "structure", "usefulness", "originality")
-        score_line = ", ".join(f"{k}={report.get(k, '?')}" for k in keys)
-        print(f"試行{attempt}: {article['title']} / {len(article['body'])}文字")
-        print(f"判定: {'PASS' if passed else 'REVISE'} / {score_line}")
-        if checks:
-            print("機械チェック: " + " / ".join(checks))
-        if passed:
-            break
-        revision = revision_note(report, checks)
-    else:
-        raise RuntimeError("3回生成しても品質基準を通過しないため公開を中止します")
+    failed_topics = []
 
-    categories = ["実用", article["category"]]
-    if dry_run:
-        print("DRY RUN: 投稿しません")
-        print(article["title"])
-        print(article["body"])
-        return 0
+    for topic_attempt in range(1, max_topic_attempts + 1):
+        print(f"\n=== テーマ挑戦 {topic_attempt}/{max_topic_attempts} ===")
 
-    location = publish(url, hatena_id, hatena_key, atom_xml(article["title"], article["body"], hatena_id, categories, draft))
-    print(("下書き保存" if draft else "公開投稿") + f"しました: {location}")
-    return 0
+        memo, sources, queries = unique_research(
+            key, research_model, theme, titles
+        )
+        print(f"採用テーマ: {memo['topic']}")
+        print(
+            f"検索クエリ数: {len(queries)} / "
+            f"参照ソース数: {len(sources)}"
+        )
+
+        revision = ""
+        article = None
+
+        for attempt in range(1, drafts_per_topic + 1):
+            article = write_article(
+                key,
+                writer_model,
+                theme,
+                memo,
+                sources,
+                titles,
+                revision,
+            )
+            passed, report, checks = critique(
+                key,
+                critic_model,
+                article,
+                memo,
+                sources,
+                titles,
+            )
+            keys = (
+                "intent_match",
+                "specificity",
+                "evidence",
+                "structure",
+                "usefulness",
+                "originality",
+            )
+            score_line = ", ".join(
+                f"{k}={report.get(k, '?')}" for k in keys
+            )
+            print(
+                f"テーマ{topic_attempt}・試行{attempt}: "
+                f"{article['title']} / {len(article['body'])}文字"
+            )
+            print(
+                f"判定: {'PASS' if passed else 'REVISE'} / "
+                f"{score_line}"
+            )
+            if checks:
+                print("機械チェック: " + " / ".join(checks))
+
+            if passed:
+                categories = ["実用", article["category"]]
+
+                if dry_run:
+                    print("DRY RUN: 投稿しません")
+                    print(article["title"])
+                    print(article["body"])
+                    return 0
+
+                location = publish(
+                    url,
+                    hatena_id,
+                    hatena_key,
+                    atom_xml(
+                        article["title"],
+                        article["body"],
+                        hatena_id,
+                        categories,
+                        draft,
+                    ),
+                )
+                print(
+                    ("下書き保存" if draft else "公開投稿")
+                    + f"しました: {location}"
+                )
+                return 0
+
+            revision = revision_note(report, checks)
+
+        # このテーマは品質基準を満たせなかったので、
+        # 同じテーマを再選択しないよう「仮の既存記事」として扱って次へ進む。
+        failed_title = (
+            (article or {}).get("title")
+            or memo.get("working_title")
+            or memo.get("topic")
+            or ""
+        )
+        failed_topics.append(failed_title)
+        if failed_title:
+            titles.insert(0, failed_title)
+        if memo.get("working_title"):
+            titles.insert(0, memo["working_title"])
+        if memo.get("topic"):
+            titles.insert(0, memo["topic"])
+
+        print(
+            f"WARNING: テーマ「{memo.get('topic', '')}」は"
+            f"{drafts_per_topic}稿で合格しなかったため破棄し、次テーマへ進みます"
+        )
+
+    raise RuntimeError(
+        f"{max_topic_attempts}テーマ試しても公開基準を満たす記事を作れませんでした。"
+        f"失敗候補: {' / '.join(failed_topics[:max_topic_attempts])}"
+    )
 
 
 if __name__ == "__main__":
