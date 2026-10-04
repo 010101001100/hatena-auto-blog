@@ -22,7 +22,7 @@ concurrency:
 jobs:
   write-and-publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     permissions:
       contents: read
 
@@ -51,6 +51,8 @@ jobs:
           RESEARCH_MODEL: "gemini-3.8-flash"
           WRITER_MODEL: "gemini-3.8-flash"
           CRITIC_MODEL: "gemini-3.8-flash"
+          MAX_TOPIC_ATTEMPTS: "5"
+          DRAFTS_PER_TOPIC: "2"
 
           HATENA_DRAFT: "false"
           DRY_RUN: ${{ github.event_name == 'push' && 'true' || 'false' }}
