@@ -17,16 +17,18 @@ ET.register_namespace("", ATOM)
 ET.register_namespace("app", APP)
 
 THEME = (
-    "PC・スマホ・Webサービス・AIツールを使う個人向けの実用ブログ。"
-    "設定、トラブル解決、データ整理、バックアップ、作業効率化を中心に、"
-    "検索してすぐ試せる具体的な解決策を扱う。"
+    "Windows・Linux・CLI・開発ツール・自動化ツールを使う人向けのIT実用ブログ。"
+    "yt-dlp、FFmpeg、Python、pip、PowerShell、Git、GitHub、VS Code、Dockerなどの"
+    "導入、設定、コマンド、エラー解決、連携方法を中心に、検索してすぐ試せる具体策を扱う。"
+    "一般的なスマホ設定や生活系ハウツーより、ツール名やエラー名が明確な技術記事を優先する。"
 )
 PILLARS = [
-    "PC設定・トラブル解決",
-    "スマホ設定・データ整理",
-    "Webサービス・AIツール活用",
-    "バックアップ・ファイル管理",
-    "個人の作業効率化",
+    "CLI・コマンドライン",
+    "Python・開発環境",
+    "Git・GitHub",
+    "動画・音声ツール",
+    "Windows・PowerShell",
+    "VS Code・Docker",
 ]
 BANNED = ["いかがでしたか", "ぜひ参考にしてください", "本記事では", "最後までお読みいただき"]
 
