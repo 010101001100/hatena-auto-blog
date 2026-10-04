@@ -12,8 +12,8 @@ on:
       - requirements.txt
       - .github/workflows/auto-post.yml
   schedule:
-    - cron: '17 8,20 * * *'
-      timezone: 'Asia/Tokyo'
+    # 08:17 / 14:17 / 20:17 JST = 23:17 / 05:17 / 11:17 UTC
+    - cron: '17 23,5,11 * * *'
 
 concurrency:
   group: hatena-auto-blog
