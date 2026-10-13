@@ -30,6 +30,43 @@ def _call_base(*args, **kwargs):
     return _base_gemini(*args, **kwargs)
 
 
+def _is_transient_gemini_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(
+        token in message
+        for token in (
+            "http 429",
+            "http 500",
+            "http 502",
+            "http 503",
+            "http 504",
+            "resource exhausted",
+            "temporarily unavailable",
+            "unavailable",
+            "high demand",
+        )
+    )
+
+
+def _call_with_retry(*args, **kwargs):
+    last_error = None
+    for attempt in range(3):
+        try:
+            result = _call_base(*args, **kwargs)
+            return result
+        except RuntimeError as exc:
+            last_error = exc
+            if attempt >= 2 or not _is_transient_gemini_error(exc):
+                raise
+            wait = 10 * (attempt + 1)
+            print(
+                f"WARNING: Gemini一時エラーのため{wait}秒後に再試行 "
+                f"({attempt + 1}/2): {exc}"
+            )
+            time.sleep(wait)
+    raise last_error
+
+
 def _models(primary):
     out = []
     for model in [primary, *FALLBACK_MODELS]:
@@ -54,7 +91,7 @@ def robust_gemini(api_key, model, prompt, search=False, json_mode=False, max_tok
         if search_enabled:
             for candidate in _models(model):
                 try:
-                    text, sources, queries = _call_base(
+                    text, sources, queries = _call_with_retry(
                         api_key,
                         candidate,
                         prompt,
@@ -96,7 +133,7 @@ verified_facts欄も「記事作成時の仮説・確認候補」として慎重
         for candidate in _models(model):
             try:
                 print(f"安全なエバーグリーン調査モデル: {candidate}")
-                return _call_base(
+                return _call_with_retry(
                     api_key,
                     candidate,
                     safe_prompt,
@@ -113,7 +150,7 @@ verified_facts欄も「記事作成時の仮説・確認候補」として慎重
         try:
             if candidate != model:
                 print(f"WARNING: {model} が使えないため {candidate} にフォールバックします")
-            return _call_base(
+            return _call_with_retry(
                 api_key,
                 candidate,
                 prompt,
@@ -148,42 +185,67 @@ def _seed_group(seed):
     return "other"
 
 
+def _title_group(title):
+    text = (title or "").lower()
+    checks = [
+        ("yt-dlp", ["yt-dlp"]),
+        ("ffmpeg", ["ffmpeg", "ffprobe"]),
+        ("python", ["python", "pip", "venv", "requirements"]),
+        ("powershell", ["powershell", "winget", "環境変数path"]),
+        ("github", ["github"]),
+        ("git", ["git ", "gitで", "gitの"]),
+        ("vscode", ["vs code", "vscode"]),
+        ("docker", ["docker"]),
+    ]
+    for group, tokens in checks:
+        if any(token in text for token in tokens):
+            return group
+    return None
+
+
 def _diversified_seeds(titles):
     buckets = {}
     for seed in _diversified_seeds(titles):
         buckets.setdefault(_seed_group(seed), []).append(seed)
 
-    # 直近8記事に登場したツール群は後回しにする。
-    # 同じツールの記事が連続し続けるのを防ぎつつ、候補自体は捨てない。
-    recent = "\n".join(titles[:8]).lower()
-    recent_hits = {
-        group: sum(
-            1
-            for token in {
-                "yt-dlp": ["yt-dlp"],
-                "ffmpeg": ["ffmpeg", "ffprobe"],
-                "python": ["python", "pip", "venv", "requirements"],
-                "powershell": ["powershell", "winget"],
-                "github": ["github"],
-                "git": ["git "],
-                "vscode": ["vs code", "vscode"],
-                "docker": ["docker"],
-                "other": [],
-            }.get(group, [])
-            if token in recent
-        )
-        for group in buckets
-    }
+    # 直近記事からカテゴリ利用履歴を推定する。
+    recent_groups = [
+        group
+        for group in (_title_group(title) for title in titles[:14])
+        if group
+    ]
+    last_group = recent_groups[0] if recent_groups else None
 
-    group_order = sorted(
-        buckets,
-        key=lambda g: (recent_hits.get(g, 0), list(buckets).index(g)),
+    # 同カテゴリの連投は禁止。
+    blocked = {last_group} if last_group else set()
+
+    # yt-dlpは直近3記事に1本まで。直近3記事にあれば今回候補から完全除外。
+    if "yt-dlp" in recent_groups[:3]:
+        blocked.add("yt-dlp")
+
+    groups = [g for g in buckets if g not in blocked]
+    if not groups:
+        groups = list(buckets)
+
+    def group_priority(group):
+        count = recent_groups.count(group)
+        try:
+            last_seen = recent_groups.index(group)
+        except ValueError:
+            last_seen = 999
+        # 未登場/長く出ていないカテゴリを最優先し、出現回数が多いカテゴリを後回し。
+        return (-last_seen, count)
+
+    group_order = sorted(groups, key=group_priority)
+    print(
+        "カテゴリ優先順: "
+        + " -> ".join(group_order)
+        + (f" / 除外: {', '.join(sorted(blocked))}" if blocked else "")
     )
 
-    # 1カテゴリを全部消化してから次へ進むのではなく、
-    # 各カテゴリから1件ずつラウンドロビンで試す。
+    # 各カテゴリの1本目を先に試し、同カテゴリ候補の連続消化を防ぐ。
     ordered = []
-    max_len = max((len(v) for v in buckets.values()), default=0)
+    max_len = max((len(buckets[g]) for g in group_order), default=0)
     for i in range(max_len):
         for group in group_order:
             if i < len(buckets[group]):
