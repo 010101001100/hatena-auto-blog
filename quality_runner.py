@@ -4,6 +4,7 @@ import re
 import sys
 import time
 import quality_v2 as q
+from quality_gate import completion_result, evaluate_quality
 from official_sources import TOPIC_SEEDS, search_official_query, source_summary_for_prompt
 
 _base_gemini = q.gemini
@@ -77,8 +78,8 @@ def _models(primary):
 
 def robust_gemini(api_key, model, prompt, search=False, json_mode=False, max_tokens=7000):
     """
-    通常は3.8 Flashの安全モードを使用。
-    USE_GOOGLE_SEARCH=true の時だけ検索グラウンディングを試す。
+    公式情報の取得はretry_research内で別途実施する。
+    USE_GOOGLE_SEARCH=true の時だけGemini検索グラウンディングも試す。
     高品質Flashを優先し、必要時のみ現行Flash-Liteへフォールバックする。
     """
     errors = []
@@ -432,12 +433,18 @@ def strict_write_article(api_key, model, theme, memo, sources, titles, revision=
 
     quality_rule = f"""
 追加の品質条件:
-- 本文は1400〜2200字を目安にする。公式資料で言えることが少ない場合は無理に長くしない
+- 本文は1600〜3500字を目安にする。実用上必要なら増減し、文字数合わせで水増ししない
 - 冒頭2〜3文で読者の疑問への答えを先に示す
 - 1記事では1つのOS・端末・プラットフォームだけを扱う。PCとAndroid等を混在させない
 - 「なぜ」だけでなく「どこをどう操作するか」「どう判断するか」を書く
 - 具体的な手順・設定例・判断基準のうち最低2種類を入れる
 - 読者が記事を閉じた直後に1つ以上の行動を取れる内容にする
+- 初心者が冒頭から最後まで順番に操作できるよう、前提条件・入力場所・実行例・期待される結果を示す
+- ファイル名を指定して実行するなら、そのファイルの作成・保存方法を説明する（読者がすでに所有していると前提にしない）
+- コード例には実行に必要なファイル名・カレントディレクトリ・実行コマンドを揃える
+- 環境差・失敗時の確認方法を最低1つ載せる。根拠のない修復手順は書かない
+- エラー対処は検索意図に直結するものだけに絞り、別記事の話題を混ぜない
+- 出力結果を例示する場合は未検証の実測結果と偽らず、説明用の期待値として示す
 - 「便利です」「おすすめです」「重要です」だけで段落を終わらせない
 - 抽象論が2段落続いたら具体例・手順・条件に置き換える
 - 「まとめ」「はじめに」「おわりに」だけの抽象見出しは禁止
@@ -476,7 +483,7 @@ def strict_local_checks(article, memo, titles):
 
     if len(body) < 1300:
         issues.append(f"本文がまだ薄い ({len(body)}文字)")
-    if len(body) > 2800:
+    if len(body) > 4200:
         issues.append(f"本文が冗長 ({len(body)}文字)")
 
     h2s = re.findall(r"(?m)^##\s+(.+)$", body)
@@ -555,9 +562,47 @@ JSONだけ:
     problems.extend(f"公式資料と実質矛盾: {x}" for x in conflicts[:6])
     return passed, problems
 
+def practical_audit(api_key, model, article, memo):
+    """読者が成功状態に到達できるかを、採点AIとは別の問いで監査する。"""
+    prompt = f"""
+あなたは初心者向け技術記事の手順テスターです。
+以下の記事を、何も準備していない読者が上から順に操作するものとして監査してください。
+想像で省略手順を補ってはいけません。実機テストをしたと主張してはいけません。
+
+【読者】
+{memo.get('reader', '')}
+【達成すべき検索意図】
+{memo.get('search_intent', '')}
+【必要な実行内容】
+{json.dumps(memo.get('hands_on', []), ensure_ascii=False)}
+【記事】
+タイトル: {article['title']}
+本文:
+{article['body']}
+
+重大欠落として指摘する例:
+- hello.pyなど未作成のファイルを突然実行し、作成・保存手順がない
+- 作業ディレクトリが不明で、説明通り入力しても対象ファイルを見つけられない
+- コマンドをcmd、Python対話モードなどどこへ入力するか分からない
+- 成功したか判断できる表示・結果・確認方法がない
+- 記事の目的達成に必須の前提や作業が丸ごと省略されている
+- 利用不可時の切り分けがなく、読者が容易につまずく
+
+不要な例の水増しや、テーマ外の高度なエラー対処は要求しない。
+記事の操作に致命的な欠落がなければpass=trueとする。
+
+必ず以下のJSONだけ返す:
+{{"pass":true,"blocking_gaps":[],"minor_notes":[]}}
+""".strip()
+    text, _, _ = robust_gemini(
+        api_key, model, prompt, search=False, json_mode=True, max_tokens=2200
+    )
+    return completion_result(q.parse_json(text))
+
+
 def strict_critique(api_key, model, article, memo, sources, titles):
     grounded_ok = False
-    passed, report, checks = _base_critique(
+    _, report, checks = _base_critique(
         api_key,
         model,
         article,
@@ -604,35 +649,22 @@ def strict_critique(api_key, model, article, memo, sources, titles):
 
     checks = list(dict.fromkeys(checks))
 
-    # 編集AIの最終ラベルより、数値評価＋重大リスク＋公式監査を優先する。
-    # 軽微な文体上の好みだけで良記事を3回捨てるのを防ぐ。
-    core_score_keys = (
-        "intent_match",
-        "specificity",
-        "evidence",
-        "structure",
-        "usefulness",
-    )
-    core_scores = [int(report.get(k, 0)) for k in core_score_keys]
-    originality = int(report.get("originality", 0))
-    # 公式資料との専用監査がPASSした場合、汎用編集AIの factual_risk は参考扱いにする。
-    # これにより、裏取り済み記事が主観的な慎重判定だけで落ち続けるのを防ぐ。
-    material_flag = bool(report.get("topic_drift")) or (
-        bool(report.get("factual_risk")) and not grounded_ok
-    )
+    # 完走性は編集者の印象点だけでは代替できないため、別の監査で確認する。
+    try:
+        practical_ok, practical_problems = practical_audit(
+            api_key, model, article, memo
+        )
+    except (RuntimeError, ValueError, json.JSONDecodeError) as exc:
+        practical_ok, practical_problems = False, [
+            f"操作完走性監査が失敗: {exc}"
+        ]
+    checks.extend(practical_problems)
 
-    # 公式手順記事は「独自説」を足すほど事実性が落ちるため、
-    # 独自性だけ3/5を合格基準にする。他の実用品質は4/5以上を維持。
-    if (
-        checks
-        or material_flag
-        or not all(s >= 4 for s in core_scores)
-        or originality < 3
-    ):
-        passed = False
-    else:
-        passed = True
-
+    passed, score, decision_reasons = evaluate_quality(
+        report, list(dict.fromkeys(checks)), grounded_ok, practical_ok
+    )
+    report["score_100"] = score
+    checks = decision_reasons
     return passed, report, checks
 
 
