@@ -231,7 +231,7 @@ def write_article(api_key, model, theme, memo, sources, titles, revision=""):
 - 冒頭2〜4文で先に答えを書く。長い前置きは禁止
 - 1記事1検索意図。テーマを広げない
 - 調査メモにplatformがある場合、その1環境だけを扱い、別OS・別端末の手順を混ぜない
-- 1200〜2200字を目安に、公式資料で裏付けられる範囲だけを書く
+- 1600〜3500字を目安に、公式資料で裏付けられる範囲だけを書く。手順を省いて短くしない
 - H2を3〜6個。必要ならH3を使う
 - 3手順以上は番号付きリスト。条件分岐や比較は表か箇条書き
 - 画面名、設定名、操作順、判断基準など再現可能な情報を優先
@@ -289,15 +289,25 @@ def critique(api_key, model, article, memo, sources, titles):
 本文:
 {article['body']}
 
-0〜5点で採点: intent_match, specificity, evidence, structure, usefulness, originality
-全項目4点以上のみPASS。事実リスク、テーマ逸脱、AI量産文があれば必ずREVISE。
+0〜5点で採点: intent_match, specificity, evidence, structure, usefulness, originality, title_seo
+- specificity: 前提・操作手順・入力例・確認方法の再現性
+- usefulness: 検索した読者が記事だけで目的を達成できるか
+- evidence: 公式根拠との整合性（未検証の実行を実測と偽る場合は低評価）
+- originality: 根拠のない独自説ではなく、具体例・比較・手順の分かりやすさの付加価値
+- title_seo: 主要な検索語と読者の目的が自然に伝わり、本文と一致するか
+実行するファイルの作り方など必須手順が欠けていればspecificity/usefulnessは最大2点。
+事実リスク、テーマ逸脱、AI量産文があれば必ずREVISE。
 JSONだけ:
-{{"decision":"PASS or REVISE","intent_match":0,"specificity":0,"evidence":0,"structure":0,"usefulness":0,"originality":0,"factual_risk":false,"topic_drift":false,"generic_ai_style":false,"problems":["問題点"],"revision_instructions":["具体的な修正指示"]}}
+{{"decision":"PASS or REVISE","intent_match":0,"specificity":0,"evidence":0,"structure":0,"usefulness":0,"originality":0,"title_seo":0,"factual_risk":false,"topic_drift":false,"generic_ai_style":false,"problems":["問題点"],"revision_instructions":["具体的な修正指示"]}}
 """.strip()
     text, _, _ = gemini(api_key, model, prompt, json_mode=True, max_tokens=2500)
     report = parse_json(text)
     checks = local_checks(article, memo, titles)
-    scores = [int(report.get(k, 0)) for k in ("intent_match", "specificity", "evidence", "structure", "usefulness", "originality")]
+    # モデルが採点値を欠落させてもクラッシュせず、公開不合格として修正へ回す。
+    scores = [
+        report.get(k) if type(report.get(k)) is int else 0
+        for k in ("intent_match", "specificity", "evidence", "structure", "usefulness", "originality", "title_seo")
+    ]
     flags = any(bool(report.get(k)) for k in ("factual_risk", "topic_drift", "generic_ai_style"))
     passed = report.get("decision") == "PASS" and all(s >= 4 for s in scores) and not flags and not checks
     return passed, report, checks
@@ -401,6 +411,7 @@ def main():
                 "structure",
                 "usefulness",
                 "originality",
+                "title_seo",
             )
             score_line = ", ".join(
                 f"{k}={report.get(k, '?')}" for k in keys
@@ -411,7 +422,7 @@ def main():
             )
             print(
                 f"判定: {'PASS' if passed else 'REVISE'} / "
-                f"{score_line}"
+                f"100点評価={report.get('score_100', '未採点')} / {score_line}"
             )
             if checks:
                 print("機械チェック: " + " / ".join(checks))
