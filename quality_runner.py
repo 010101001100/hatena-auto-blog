@@ -205,7 +205,7 @@ def _title_group(title):
 
 def _diversified_seeds(titles):
     buckets = {}
-    for seed in _diversified_seeds(titles):
+    for seed in TOPIC_SEEDS:
         buckets.setdefault(_seed_group(seed), []).append(seed)
 
     # 直近記事からカテゴリ利用履歴を推定する。
@@ -258,7 +258,7 @@ def retry_research(api_key, model, theme, titles, reject=""):
     先に公式資料を取得できるテーマ候補を選び、
     その公式資料だけを読ませて記事企画を作る。
     """
-    for seed in TOPIC_SEEDS:
+    for seed in _diversified_seeds(titles):
         seed_score, _ = q.nearest(seed["label"], titles)
         if seed_score >= 0.58:
             continue
