@@ -2,9 +2,21 @@ name: Hatena Auto Blog
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - quality_gate.py
+      - tests/**
+      - official_sources.py
+      - quality_runner.py
+      - quality_entry.py
+      - quality_v2.py
+      - requirements.txt
+      - .github/workflows/auto-post.yml
   push:
     branches: [main]
     paths:
+      - quality_gate.py
+      - tests/**
       - official_sources.py
       - quality_runner.py
       - quality_entry.py
@@ -20,7 +32,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -v
+
   write-and-publish:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: tests
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -51,8 +78,8 @@ jobs:
           RESEARCH_MODEL: "gemini-3.8-flash"
           WRITER_MODEL: "gemini-3.8-flash"
           CRITIC_MODEL: "gemini-3.8-flash"
-          MAX_TOPIC_ATTEMPTS: "5"
-          DRAFTS_PER_TOPIC: "2"
+          MAX_TOPIC_ATTEMPTS: "3"
+          DRAFTS_PER_TOPIC: "3"
 
           HATENA_DRAFT: "false"
           DRY_RUN: "false"
