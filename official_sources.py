@@ -82,10 +82,241 @@ TOPIC_SEEDS = [
     {"label": "Dockerで不要なコンテナやイメージを整理する", "query": "docker system prune remove unused official docs", "domains": ["docs.docker.com"]},
 ]
 
+
 UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/140.0 Safari/537.36"
 )
+
+
+def direct_official_urls(query: str, domains: list[str]) -> list[str]:
+    """検索エンジンが0件でも辿れる、安定した公式ドキュメントURLを返す。"""
+    q = query.lower()
+    urls = []
+
+    if "github.com" in domains and "yt-dlp" in q:
+        urls = [
+            "https://github.com/yt-dlp/yt-dlp/blob/master/README.md",
+            "https://github.com/yt-dlp/yt-dlp/wiki/Installation",
+            "https://github.com/yt-dlp/yt-dlp/releases/latest",
+        ]
+
+    elif "ffmpeg.org" in domains:
+        if "ffprobe" in q:
+            urls = [
+                "https://ffmpeg.org/ffprobe.html",
+                "https://ffmpeg.org/ffmpeg-all.html",
+            ]
+        elif "filter" in q:
+            urls = [
+                "https://ffmpeg.org/ffmpeg-filters.html",
+                "https://ffmpeg.org/ffmpeg.html",
+            ]
+        else:
+            urls = [
+                "https://ffmpeg.org/ffmpeg.html",
+                "https://ffmpeg.org/ffmpeg-all.html",
+            ]
+
+    elif "pip.pypa.io" in domains:
+        if "freeze" in q:
+            urls = [
+                "https://pip.pypa.io/en/stable/cli/pip_freeze/",
+                "https://pip.pypa.io/en/stable/user_guide/",
+            ]
+        elif "requirements" in q:
+            urls = [
+                "https://pip.pypa.io/en/stable/user_guide/",
+                "https://pip.pypa.io/en/stable/reference/requirements-file-format/",
+            ]
+        elif "uninstall" in q:
+            urls = [
+                "https://pip.pypa.io/en/stable/cli/pip_install/",
+                "https://pip.pypa.io/en/stable/cli/pip_uninstall/",
+            ]
+        elif "list" in q:
+            urls = [
+                "https://pip.pypa.io/en/stable/cli/pip_list/",
+                "https://pip.pypa.io/en/stable/user_guide/",
+            ]
+        else:
+            urls = [
+                "https://pip.pypa.io/en/stable/cli/pip_install/",
+                "https://pip.pypa.io/en/stable/user_guide/",
+            ]
+
+    elif "docs.python.org" in domains or "python.org" in domains:
+        if "venv" in q:
+            urls = [
+                "https://docs.python.org/3/library/venv.html",
+                "https://docs.python.org/3/tutorial/venv.html",
+            ]
+        elif "http.server" in q:
+            urls = [
+                "https://docs.python.org/3/library/http.server.html",
+                "https://docs.python.org/3/using/cmdline.html",
+            ]
+        elif "json.tool" in q:
+            urls = [
+                "https://docs.python.org/3/library/json.html",
+                "https://docs.python.org/3/using/cmdline.html",
+            ]
+        else:
+            urls = [
+                "https://docs.python.org/3/using/windows.html",
+                "https://docs.python.org/3/using/cmdline.html",
+                "https://www.python.org/downloads/windows/",
+            ]
+
+    elif "learn.microsoft.com" in domains:
+        if "executionpolicy" in q or "execution policy" in q:
+            urls = [
+                "https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.security/get-executionpolicy",
+                "https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.security/set-executionpolicy",
+                "https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_execution_policies",
+            ]
+        elif "get-childitem" in q:
+            urls = [
+                "https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.management/get-childitem",
+                "https://learn.microsoft.com/en-us/powershell/scripting/samples/working-with-files-and-folders",
+            ]
+        elif "get-command" in q:
+            urls = [
+                "https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/get-command",
+                "https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_command_precedence",
+            ]
+        elif "winget" in q and "upgrade" in q:
+            urls = [
+                "https://learn.microsoft.com/en-us/windows/package-manager/winget/upgrade",
+                "https://learn.microsoft.com/en-us/windows/package-manager/winget/",
+            ]
+        elif "winget" in q:
+            urls = [
+                "https://learn.microsoft.com/en-us/windows/package-manager/winget/search",
+                "https://learn.microsoft.com/en-us/windows/package-manager/winget/install",
+            ]
+        else:
+            urls = [
+                "https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_environment_variables",
+                "https://learn.microsoft.com/en-us/windows/win32/procthread/environment-variables",
+            ]
+
+    elif "git-scm.com" in domains:
+        if "init" in q:
+            pages = ["git-init", "git"]
+        elif "status" in q or "diff" in q:
+            pages = ["git-status", "git-diff"]
+        elif "amend" in q:
+            pages = ["git-commit", "git-rebase"]
+        elif "switch" in q or "branch" in q:
+            pages = ["git-switch", "git-branch"]
+        elif "remote" in q:
+            pages = ["git-remote", "git-fetch"]
+        elif "gitignore" in q:
+            pages = ["gitignore", "git-status"]
+        elif "stash" in q:
+            pages = ["git-stash", "git-status"]
+        else:
+            pages = ["git-config", "git"]
+        urls = [f"https://git-scm.com/docs/{page}" for page in pages]
+
+    elif "docs.github.com" in domains:
+        if "ssh" in q:
+            urls = [
+                "https://docs.github.com/en/authentication/connecting-to-github-with-ssh/adding-a-new-ssh-key-to-your-github-account",
+                "https://docs.github.com/en/authentication/connecting-to-github-with-ssh/testing-your-ssh-connection",
+            ]
+        elif "token" in q:
+            urls = [
+                "https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens",
+                "https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/about-authentication-to-github",
+            ]
+        elif "two-factor" in q or "2fa" in q:
+            urls = [
+                "https://docs.github.com/en/authentication/securing-your-account-with-two-factor-authentication-2fa/configuring-two-factor-authentication",
+                "https://docs.github.com/en/authentication/securing-your-account-with-two-factor-authentication-2fa/accessing-github-using-two-factor-authentication",
+            ]
+        elif "branch protection" in q:
+            urls = [
+                "https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches",
+                "https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/managing-a-branch-protection-rule",
+            ]
+        elif "secret" in q:
+            urls = [
+                "https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets",
+                "https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax",
+            ]
+        elif "workflow_dispatch" in q or "cron" in q or "schedule" in q:
+            urls = [
+                "https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax",
+                "https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow",
+            ]
+
+    elif "code.visualstudio.com" in domains:
+        if "python" in q:
+            urls = [
+                "https://code.visualstudio.com/docs/python/environments",
+                "https://code.visualstudio.com/docs/python/python-tutorial",
+            ]
+        elif "settings sync" in q:
+            urls = [
+                "https://code.visualstudio.com/docs/configure/settings-sync",
+                "https://code.visualstudio.com/docs/configure/settings",
+            ]
+        elif "extension" in q:
+            urls = [
+                "https://code.visualstudio.com/docs/configure/extensions/extension-marketplace",
+                "https://code.visualstudio.com/docs/configure/settings",
+            ]
+        elif "workspace" in q:
+            urls = [
+                "https://code.visualstudio.com/docs/configure/settings",
+                "https://code.visualstudio.com/docs/editing/workspaces/workspaces",
+            ]
+        else:
+            urls = [
+                "https://code.visualstudio.com/docs/terminal/basics",
+                "https://code.visualstudio.com/docs/terminal/profiles",
+            ]
+
+    elif "docs.docker.com" in domains:
+        if "desktop" in q and "windows" in q:
+            urls = [
+                "https://docs.docker.com/desktop/setup/install/windows-install/",
+                "https://docs.docker.com/desktop/setup/install/",
+            ]
+        elif " logs" in " " + q:
+            urls = [
+                "https://docs.docker.com/reference/cli/docker/container/logs/",
+                "https://docs.docker.com/reference/cli/docker/container/",
+            ]
+        elif " exec" in " " + q:
+            urls = [
+                "https://docs.docker.com/reference/cli/docker/container/exec/",
+                "https://docs.docker.com/reference/cli/docker/container/",
+            ]
+        elif "compose" in q:
+            urls = [
+                "https://docs.docker.com/reference/cli/docker/compose/up/",
+                "https://docs.docker.com/reference/cli/docker/compose/down/",
+            ]
+        elif "prune" in q:
+            urls = [
+                "https://docs.docker.com/reference/cli/docker/system/prune/",
+                "https://docs.docker.com/reference/cli/docker/system/",
+            ]
+        elif " ps" in " " + q:
+            urls = [
+                "https://docs.docker.com/reference/cli/docker/container/ls/",
+                "https://docs.docker.com/reference/cli/docker/container/",
+            ]
+        else:
+            urls = [
+                "https://docs.docker.com/reference/cli/docker/container/run/",
+                "https://docs.docker.com/reference/cli/docker/container/",
+            ]
+
+    return [u for u in urls if is_official_url(u, domains)]
 
 
 def is_official_url(url: str, allowed_domains: list[str]) -> bool:
@@ -162,8 +393,29 @@ def search_official_query(
                 }
             )
 
+    # 検索エンジンが0件/少数でも、既知の公式URLを直接取得して補う。
+    if len(candidates) < max_sources:
+        direct_urls = direct_official_urls(query, domains)
+        if direct_urls:
+            print(
+                f"INFO: 公式検索候補が{len(candidates)}件のため"
+                f" 既知の公式URLを{len(direct_urls)}件補完"
+            )
+        for url in direct_urls:
+            if url in seen:
+                continue
+            seen.add(url)
+            candidates.append(
+                {
+                    "title": url,
+                    "url": url,
+                    "snippet": "",
+                    "domain": (urlparse(url).hostname or "").lower(),
+                }
+            )
+
     sources = []
-    for item in candidates[:8]:
+    for item in candidates[:10]:
         page_text = fetch_page_text(item["url"])
         evidence = page_text if len(page_text) >= 500 else item["snippet"]
         if len(evidence) < 160:
