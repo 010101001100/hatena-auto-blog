@@ -303,7 +303,11 @@ JSONだけ:
     text, _, _ = gemini(api_key, model, prompt, json_mode=True, max_tokens=2500)
     report = parse_json(text)
     checks = local_checks(article, memo, titles)
-    scores = [int(report.get(k, 0)) for k in ("intent_match", "specificity", "evidence", "structure", "usefulness", "originality", "title_seo")]
+    # モデルが採点値を欠落させてもクラッシュせず、公開不合格として修正へ回す。
+    scores = [
+        report.get(k) if type(report.get(k)) is int else 0
+        for k in ("intent_match", "specificity", "evidence", "structure", "usefulness", "originality", "title_seo")
+    ]
     flags = any(bool(report.get(k)) for k in ("factual_risk", "topic_drift", "generic_ai_style"))
     passed = report.get("decision") == "PASS" and all(s >= 4 for s in scores) and not flags and not checks
     return passed, report, checks
