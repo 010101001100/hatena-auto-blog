@@ -322,15 +322,28 @@ JSONだけ:
     return passed, report, checks
 
 
-def revision_note(report, checks):
+def revision_note(report, checks, previous_article=None):
     problems = checks + [x for x in (report.get("problems") or []) if isinstance(x, str)]
     fixes = [x for x in (report.get("revision_instructions") or []) if isinstance(x, str)]
-    return "\n\n".join([
+    instructions = [
         "前稿は編集チェックで不合格でした。テーマと公式根拠は変えず、指摘された欠落を優先的に修正し、完成原稿全文を再出力してください。",
         "問題点:\n" + "\n".join(f"- {x}" for x in problems[:8]),
         "修正指示:\n" + "\n".join(f"- {x}" for x in fixes[:8]),
         "前稿で正しかった操作・引用・成功判定は残し、指摘されていない箇所をむやみに書き換えない。一般論や冗長な前置きも削る。",
-    ])
+    ]
+    if previous_article:
+        # 修正に必要な直前の原稿を再利用する。追加のLLM呼び出しはしない。
+        # URLや注釈も残しつつ、入力が際限なく肥大化しないよう文字数を制限。
+        title = (previous_article.get("title") or "")[:120]
+        body = (previous_article.get("body") or "")[:4200]
+        instructions.append(
+            "【修正対象の前稿】\n"
+            f"タイトル: {title}\n"
+            "---BODY START---\n"
+            f"{body}\n"
+            "---BODY END---"
+        )
+    return "\n\n".join(instructions)
 
 
 def atom_xml(title, body, author, categories, draft):
@@ -463,7 +476,7 @@ def main():
                 )
                 return 0
 
-            revision = revision_note(report, checks)
+            revision = revision_note(report, checks, article)
 
         # このテーマは品質基準を満たせなかったので、
         # 同じテーマを再選択しないよう「仮の既存記事」として扱って次へ進む。
