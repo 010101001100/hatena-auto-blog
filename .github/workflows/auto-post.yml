@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - quality_gate.py
+      - article_checks.py
       - tests/**
       - official_sources.py
       - quality_runner.py
@@ -16,6 +17,7 @@ on:
     branches: [main]
     paths:
       - quality_gate.py
+      - article_checks.py
       - tests/**
       - official_sources.py
       - quality_runner.py
@@ -24,8 +26,8 @@ on:
       - requirements.txt
       - .github/workflows/auto-post.yml
   schedule:
-    # 08:17 / 14:17 / 20:17 JST = 23:17 / 05:17 / 11:17 UTC
-    - cron: '17 23,5,11 * * *'
+    # 08:17 JST = 前日23:17 UTC。無料枠と品質監査を優先して1日1回。
+    - cron: '17 23 * * *'
 
 concurrency:
   group: hatena-auto-blog
@@ -78,7 +80,8 @@ jobs:
           RESEARCH_MODEL: "gemini-3.8-flash"
           WRITER_MODEL: "gemini-3.8-flash"
           CRITIC_MODEL: "gemini-3.8-flash"
-          MAX_TOPIC_ATTEMPTS: "3"
+          MAX_TOPIC_ATTEMPTS: "2"
+          MAX_GEMINI_CALLS: "14"
           DRAFTS_PER_TOPIC: "3"
 
           HATENA_DRAFT: "false"
