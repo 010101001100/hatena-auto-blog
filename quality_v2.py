@@ -231,6 +231,10 @@ def write_article(api_key, model, theme, memo, sources, titles, revision=""):
 
 ルール:
 - 冒頭2〜4文で先に答えを書く。長い前置きは禁止
+- 調査メモのexecution_planを**原稿の完成条件**として扱う。scopeを超えて話を広げない
+- prerequisitesの事前確認、stepsの実行順序、success_checkでの成功判定、failure_pathsの分岐を初稿に全部含める
+- システム要件を確認する記事なら、要件を確認する方法と不足時の対処の入口を説明。BIOSのメーカー固有画面など出典のない操作は書かない
+- 記事の成功条件と必要な操作を確認してから書き始め、あとから手順を継ぎ足すだけの構成を避ける
 - 1記事1検索意図。テーマを広げない
 - 調査メモにplatformがある場合、その1環境だけを扱い、別OS・別端末の手順を混ぜない
 - 1600〜3500字を目安に、公式資料で裏付けられる範囲だけを書く。手順を省いて短くしない
@@ -298,6 +302,9 @@ def critique(api_key, model, article, memo, sources, titles):
 - originality: 根拠のない独自説ではなく、具体例・比較・手順の分かりやすさの付加価値
 - title_seo: 主要な検索語と読者の目的が自然に伝わり、本文と一致するか
 実行するファイルの作り方など必須手順が欠けていればspecificity/usefulnessは最大2点。
+調査メモのexecution_plan.scope（記事のゴール）とsuccess_checkを最優先の評価基準にする。
+scope外のBIOS変更等を必須と判定して減点しない一方、scope内の前提確認・実行・成功確認が欠けたら厳しく減点する。
+採点が90点以上でも欠落があればREVISEとする。
 事実リスク、テーマ逸脱、AI量産文があれば必ずREVISE。
 JSONだけ:
 {{"decision":"PASS or REVISE","intent_match":0,"specificity":0,"evidence":0,"structure":0,"usefulness":0,"originality":0,"title_seo":0,"factual_risk":false,"topic_drift":false,"generic_ai_style":false,"problems":["問題点"],"revision_instructions":["具体的な修正指示"]}}
@@ -315,15 +322,28 @@ JSONだけ:
     return passed, report, checks
 
 
-def revision_note(report, checks):
+def revision_note(report, checks, previous_article=None):
     problems = checks + [x for x in (report.get("problems") or []) if isinstance(x, str)]
     fixes = [x for x in (report.get("revision_instructions") or []) if isinstance(x, str)]
-    return "\n\n".join([
-        "前稿は編集チェックで不合格でした。テーマは変えず、全文を修正してください。",
+    instructions = [
+        "前稿は編集チェックで不合格でした。テーマと公式根拠は変えず、指摘された欠落を優先的に修正し、完成原稿全文を再出力してください。",
         "問題点:\n" + "\n".join(f"- {x}" for x in problems[:8]),
         "修正指示:\n" + "\n".join(f"- {x}" for x in fixes[:8]),
-        "一般論、冗長な前置き、AI定型文も削ってください。",
-    ])
+        "前稿で正しかった操作・引用・成功判定は残し、指摘されていない箇所をむやみに書き換えない。一般論や冗長な前置きも削る。",
+    ]
+    if previous_article:
+        # 修正に必要な直前の原稿を再利用する。追加のLLM呼び出しはしない。
+        # URLや注釈も残しつつ、入力が際限なく肥大化しないよう文字数を制限。
+        title = (previous_article.get("title") or "")[:120]
+        body = (previous_article.get("body") or "")[:4200]
+        instructions.append(
+            "【修正対象の前稿】\n"
+            f"タイトル: {title}\n"
+            "---BODY START---\n"
+            f"{body}\n"
+            "---BODY END---"
+        )
+    return "\n\n".join(instructions)
 
 
 def atom_xml(title, body, author, categories, draft):
@@ -456,7 +476,7 @@ def main():
                 )
                 return 0
 
-            revision = revision_note(report, checks)
+            revision = revision_note(report, checks, article)
 
         # このテーマは品質基準を満たせなかったので、
         # 同じテーマを再選択しないよう「仮の既存記事」として扱って次へ進む。

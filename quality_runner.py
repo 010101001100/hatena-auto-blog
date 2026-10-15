@@ -6,6 +6,7 @@ import time
 import quality_v2 as q
 from quality_gate import completion_result, evaluate_quality
 from article_checks import practical_static_checks
+from execution_plan import execution_plan_issues, format_execution_plan
 from official_sources import TOPIC_SEEDS, search_official_query, source_summary_for_prompt
 
 _base_gemini = q.gemini
@@ -304,6 +305,12 @@ def retry_research(api_key, model, theme, titles, reject=""):
 
 条件:
 - 公式資料で十分説明できる範囲だけを記事テーマにする
+- **最優先**：前提確認から成功判定まで、記事だけで完結できる狭い検索意図を選ぶ
+- 例: Docker Desktopの「必要条件の確認」と「インストールと仮想化設定の全作業」を同時に扱わない。1記事1つの完了目標に絞る
+- 不確実なBIOS/UEFIの変更やメーカー固有操作など、公式資料にない作業を読者に強要しない
+- 実機ごとに異なる作業は「要確認」「公式の端末メーカー資料へ」として範囲を区切り、具体的な操作を創作しない
+- 満たす必要のある事前条件を「確認方法」と「不足している場合の分岐」に分ける
+- 完了確認のコマンドや画面表示を、裏付けがある範囲で必ず用意する
 - 公式資料にない高度なトラブルシューティングへ広げない
 - 読者が実際に操作できる具体的なテーマにする
 - 1記事1検索意図
@@ -326,7 +333,14 @@ JSONだけ:
   "verified_facts":["公式資料で直接確認できる事実を3〜8個"],
   "pitfalls":["公式資料で確認できる注意点"],
   "hands_on":["公式資料で確認できる操作手順"],
-  "avoid_claims":["公式資料にないため書かない内容"]
+  "avoid_claims":["公式資料にないため書かない内容"],
+  "execution_plan": {{
+    "scope":"1記事で完了する単一の作業目的。インストール全体と要件確認を混同しない",
+    "prerequisites":["読者が開始前に確認する条件と、具体的な確認方法を1〜6件"],
+    "steps":["目的達成のために順に行う操作を2〜8件。画面名・入力コマンドは公式根拠があるもののみ"],
+    "success_check":"最後に読者が目視またはコマンドで確認できる明確な成功条件",
+    "failure_paths":["条件不足や予想と違う表示の時、公式に裏付けられる確認・分岐を1〜5件"]
+  }}
 }}
 """.strip()
 
@@ -351,6 +365,14 @@ JSONだけ:
                 )
 
         if not data or not data.get("topic") or not data.get("working_title"):
+            continue
+
+        plan_problems = execution_plan_issues(data)
+        if plan_problems:
+            print(
+                "WARNING: 初稿前の実行計画が不完全。記事生成せず候補を見直します: "
+                + " / ".join(plan_problems)
+            )
             continue
 
         title_score, old = q.nearest(data["working_title"], titles)
@@ -460,7 +482,20 @@ def strict_write_article(api_key, model, theme, memo, sources, titles, revision=
 {evidence_rule}
 """.strip()
 
-    combined = quality_rule
+    # 調査1回で作成した完走計画を初稿の最優先指示として再利用する。
+    # 追加のGemini企画呼び出しを増やさない。
+    plan_text = format_execution_plan(memo)
+    combined = (
+        "【最優先：初稿から読者が完走できる記事を書く】\n"
+        + plan_text
+        + "\n\n"
+        + "計画の各前提・操作・成功結果・失敗分岐を本文で明示する。"
+        + "ただし根拠のないBIOS画面やUI操作を創作しない。"
+        + "目的が要件確認なら、環境設定の変更まで無理に本文へ含めない。"
+        + "実行コマンドは入力する場所と期待する表示をセットで示す。"
+        + "\n\n"
+        + quality_rule
+    )
     if revision:
         combined += "\n\n前稿への修正指示:\n" + revision
 
@@ -580,8 +615,8 @@ def practical_audit(api_key, model, article, memo):
 {memo.get('reader', '')}
 【達成すべき検索意図】
 {memo.get('search_intent', '')}
-【必要な実行内容】
-{json.dumps(memo.get('hands_on', []), ensure_ascii=False)}
+【公式資料に基づく完走計画】
+{format_execution_plan(memo)}
 【記事】
 タイトル: {article['title']}
 本文:
@@ -595,6 +630,9 @@ def practical_audit(api_key, model, article, memo):
 - GitHub.comのSSHキー登録記事で、`ssh -T git@github.com` による疎通確認と期待する認証メッセージがない
 - VS Codeの履歴ナビゲーションで、`Ctrl+Up` が表示位置へスクロールする操作なのに、入力欄へコマンドを再入力する操作と説明している
 - 記事の目的達成に必須の前提や作業が丸ごと省略されている
+- 記事のゴールが「要件確認」なのに「メーカー固有のBIOS変更方法」まで必須だと誤認していないか注意する
+- 企画のscope内で成功できることを評価し、scope外の高度な操作を追加要求しない
+- 根拠のない画面名・手順を捏造してまで完了を演出してはいけない
 - 利用不可時の切り分けがなく、読者が容易につまずく
 
 不要な例の水増しや、テーマ外の高度なエラー対処は要求しない。
