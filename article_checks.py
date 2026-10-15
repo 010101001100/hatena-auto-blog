@@ -24,7 +24,7 @@ def practical_static_checks(article, memo):
                 "登録後の疎通テストと判定手順を追加する"
             )
         if not re.search(r"successfully authenticated|Hi\s+USERNAME|"
-                         r"Hi\s+ユーザー|認証に成功|認証でき|正常に認証", body, re.IGNORECASE):
+                         r"Hi\s+ユーザー|Hi\s+[^\s!]+!|you.ve\s+successfully\s+authenticated", body, re.IGNORECASE):
             issues.append(
                 "GitHub SSH接続テストの期待結果がない。"
                 "GitHubの挨拶メッセージを例示して成功判定を説明する"
