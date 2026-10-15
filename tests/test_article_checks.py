@@ -22,6 +22,12 @@ class PracticalStaticTests(unittest.TestCase):
                    "body": "接続確認は `ssh -T git@github.com` を実行する。"}
         self.assertTrue(any("期待結果" in x for x in practical_static_checks(article, {})))
 
+    def test_negative_authentication_text_is_not_success(self):
+        article = {"title": "MacでGitHub SSHキーを登録",
+                   "body": "`ssh -T git@github.com` を実行しても認証できません。"}
+        issues = practical_static_checks(article, {})
+        self.assertTrue(any("期待結果" in issue for issue in issues))
+
     def test_ordinary_git_article_has_no_specific_ssh_requirement(self):
         article = {"title": "GitHub ActionsのSecretsを設定する", "body": "画面で確認する"}
         self.assertEqual(practical_static_checks(article, {}), [])
