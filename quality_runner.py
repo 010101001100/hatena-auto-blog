@@ -624,7 +624,7 @@ def preflight_checks(article, memo, sources, titles):
         checks.append("参考情報セクションがない")
     else:
         refs = body.split("## 参考情報", 1)[1]
-        ref_urls = re.findall(r"https?://[^)\\s>]+", refs)
+        ref_urls = re.findall(r"https?://[^)\s>]+", refs)
         if len(ref_urls) < 2:
             checks.append("参考リンクが2件未満")
         allowed_urls = {source.get("url", "") for source in sources}
