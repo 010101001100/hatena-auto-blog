@@ -87,6 +87,23 @@ class ExecutionPlanTests(unittest.TestCase):
         self.assertEqual(gemini.call_count, 1)
         summary.assert_called_once()
 
+    def test_second_draft_receives_previous_article_and_targeted_fixes(self):
+        import quality_v2
+        previous = {
+            "title": "Docker Desktopの要件を確認する",
+            "body": "## 前提条件\\nwinverを実行する\\n## 確認\\nwsl --versionを使う",
+        }
+        report = {
+            "problems": ["成功したか判断できない"],
+            "revision_instructions": ["最後に期待結果を追加する"],
+        }
+        note = quality_v2.revision_note(report, [], previous)
+        self.assertIn("winver", note)
+        self.assertIn("wsl --version", note)
+        self.assertIn("最後に期待結果を追加する", note)
+        self.assertIn("---BODY START---", note)
+        self.assertIn("指摘されていない箇所", note)
+
     def test_first_draft_uses_plan_without_new_planning_api_call(self):
         memo = valid_memo()
         article = {"title": "Docker Desktopの利用要件を確認", "category": "VS Code・Docker",
