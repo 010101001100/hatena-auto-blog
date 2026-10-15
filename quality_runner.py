@@ -5,6 +5,7 @@ import sys
 import time
 import quality_v2 as q
 from quality_gate import completion_result, evaluate_quality
+from article_checks import practical_static_checks
 from official_sources import TOPIC_SEEDS, search_official_query, source_summary_for_prompt
 
 _base_gemini = q.gemini
@@ -15,11 +16,35 @@ _base_research = q.research
 
 FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.1-flash-lite"]
 _LAST_CALL = 0.0
+_CALL_COUNT = 0
+_EXHAUSTED_MODELS = set()
+
+
+class ModelDailyQuotaExceeded(RuntimeError):
+    """当日の無料枠が尽きたモデル。短時間の再試行では回復しない。"""
+
+
+class ApiCallBudgetExceeded(RuntimeError):
+    """今回の自動実行に割り当てたAPI呼び出し枠を使い切った。"""
+
+
+def _quota_exhausted(exc):
+    message = str(exc).lower()
+    return (
+        "you exceeded your current quota" in message
+        or "quota exceeded for metric" in message
+        or ("http 429" in message and "free_tier_requests" in message)
+    )
+
+
+def _short_error(exc):
+    # Geminiの大きなエラーJSONを繰り返しログへ流さない。
+    return str(exc).splitlines()[0][:180]
 
 
 def _throttle():
     global _LAST_CALL
-    # Free tierの3.8 Flashは短時間の連続呼び出しで429になりやすいので間隔を空ける。
+    # 短時間の連続呼び出しを避ける。日次クォータ超過にはsleepを使わない。
     wait = 13.0 - (time.monotonic() - _LAST_CALL)
     if wait > 0:
         time.sleep(wait)
@@ -27,142 +52,122 @@ def _throttle():
 
 
 def _call_base(*args, **kwargs):
+    global _CALL_COUNT
+    budget = max(1, int(os.getenv("MAX_GEMINI_CALLS", "14")))
+    if _CALL_COUNT >= budget:
+        raise ApiCallBudgetExceeded(
+            f"実行あたりのGemini API呼び出し上限（{budget}回）に達したため公開を保留"
+        )
     _throttle()
+    _CALL_COUNT += 1
     return _base_gemini(*args, **kwargs)
 
 
-def _is_transient_gemini_error(exc: Exception) -> bool:
+def _is_transient_gemini_error(exc):
     message = str(exc).lower()
+    if _quota_exhausted(exc):
+        return False
     return any(
-        token in message
-        for token in (
-            "http 429",
-            "http 500",
-            "http 502",
-            "http 503",
-            "http 504",
-            "resource exhausted",
-            "temporarily unavailable",
-            "unavailable",
-            "high demand",
+        token in message for token in (
+            "http 429", "http 500", "http 502", "http 503", "http 504",
+            "temporarily unavailable", "high demand",
+            "connection reset", "timed out", "timeout",
         )
     )
 
 
 def _call_with_retry(*args, **kwargs):
-    last_error = None
-    for attempt in range(3):
+    # quality_v2.gemini()の内側では再試行しない。ここで一度だけ再試行する。
+    for attempt in range(2):
         try:
-            result = _call_base(*args, **kwargs)
-            return result
+            return _call_base(*args, **kwargs)
+        except (ApiCallBudgetExceeded, ModelDailyQuotaExceeded):
+            raise
         except RuntimeError as exc:
-            last_error = exc
-            if attempt >= 2 or not _is_transient_gemini_error(exc):
+            if _quota_exhausted(exc):
+                raise ModelDailyQuotaExceeded(_short_error(exc)) from exc
+            if attempt or not _is_transient_gemini_error(exc):
                 raise
-            wait = 10 * (attempt + 1)
-            print(
-                f"WARNING: Gemini一時エラーのため{wait}秒後に再試行 "
-                f"({attempt + 1}/2): {exc}"
-            )
-            time.sleep(wait)
-    raise last_error
+            print(f"WARNING: Gemini一時エラー。8秒後に1回だけ再試行: {_short_error(exc)}")
+            time.sleep(8)
+    raise AssertionError("unreachable")
 
 
 def _models(primary):
     out = []
     for model in [primary, *FALLBACK_MODELS]:
-        if model and model not in out:
+        if model and model not in out and model not in _EXHAUSTED_MODELS:
             out.append(model)
     return out
 
 
+def _call_candidates(api_key, model, prompt, *, search, json_mode, max_tokens):
+    errors = []
+    for candidate in _models(model):
+        try:
+            if candidate != model:
+                print(f"INFO: 利用可能な代替Geminiモデル: {candidate}")
+            result = _call_with_retry(
+                api_key, candidate, prompt, search=search,
+                json_mode=json_mode, max_tokens=max_tokens,
+            )
+            if search and len(result[1]) < 2:
+                errors.append(f"{candidate}: 検索ソースが2件未満")
+                continue
+            return result
+        except ModelDailyQuotaExceeded as exc:
+            _EXHAUSTED_MODELS.add(candidate)
+            print(f"WARNING: {candidate} は日次クォータ超過。実行中は再利用しません")
+            errors.append(f"{candidate}: {_short_error(exc)}")
+        except ApiCallBudgetExceeded:
+            raise
+        except RuntimeError as exc:
+            errors.append(f"{candidate}: {_short_error(exc)}")
+
+    if not _models(model):
+        raise ModelDailyQuotaExceeded(
+            "使用可能なGeminiモデルの日次クォータが尽きたため、記事公開を保留"
+        )
+    raise RuntimeError("Gemini API失敗: " + " / ".join(errors[-3:]))
+
+
 def robust_gemini(api_key, model, prompt, search=False, json_mode=False, max_tokens=7000):
     """
-    公式情報の取得はretry_research内で別途実施する。
-    USE_GOOGLE_SEARCH=true の時だけGemini検索グラウンディングも試す。
-    高品質Flashを優先し、必要時のみ現行Flash-Liteへフォールバックする。
+    モデルあたりの日次クォータ枯渇は記録して再試行しない。
+    Gemini検索は任意。記事企画の一次情報はretry_researchで直接取得する。
     """
-    errors = []
-
     if search:
         search_enabled = os.getenv("USE_GOOGLE_SEARCH", "false").strip().lower() in {
             "1", "true", "yes", "on"
         }
-
         if search_enabled:
-            for candidate in _models(model):
-                try:
-                    text, sources, queries = _call_with_retry(
-                        api_key,
-                        candidate,
-                        prompt,
-                        search=True,
-                        json_mode=json_mode,
-                        max_tokens=max_tokens,
-                    )
-                    if len(sources) >= 2:
-                        print(f"検索調査モデル: {candidate} / ソース{len(sources)}件")
-                        return text, sources, queries
-                    errors.append(f"{candidate}: ソース{len(sources)}件")
-                except RuntimeError as e:
-                    errors.append(f"{candidate}: {e}")
+            try:
+                return _call_candidates(
+                    api_key, model, prompt, search=True,
+                    json_mode=json_mode, max_tokens=max_tokens,
+                )
+            except (ModelDailyQuotaExceeded, ApiCallBudgetExceeded):
+                raise
+            except RuntimeError as exc:
+                print(f"WARNING: Gemini検索に失敗したため安全な調査へ: {_short_error(exc)}")
         else:
-            print("INFO: Google検索は無効。API枠を記事品質に使うため安全モードへ進みます")
+            print("INFO: Gemini検索無効（公式ページの直接取得を優先）")
 
         safe_prompt = """
-重要: この実行ではGoogle検索を使っていません。
-検索した、公式情報で確認した、最新情報を確認した、とは絶対に書かないでください。
-
-テーマ選定は長く有効なエバーグリーン内容だけに限定してください。
-禁止:
-- 料金、価格、割合、倍率、ランキング
-- 最新、現在、2026年版など鮮度依存の主張
-- 特定バージョン番号に依存する細かい仕様
-- 医療、法律、投資、税務
-- 「公式が推奨」「標準で必ず有効」など未確認の断定
-
-優先:
-- 読者自身が画面で確認できる手順
-- データ整理、バックアップの考え方
-- 設定を確認する順番
-- トラブルの切り分け方
-- ツールに依存しすぎない作業手順
-
-verified_facts欄も「記事作成時の仮説・確認候補」として慎重に扱ってください。
+重要: このGemini応答にはGoogle検索グラウンディングを使いません。
+自分が検索した、最新情報を調べた、などの主張をしないこと。
+一次情報の確認は別の公式ページ取得処理が行います。
+料金・鮮度依存の未確認主張、根拠のない数値・ランキングを記載しないこと。
 """.strip() + "\n\n" + prompt
+        return _call_candidates(
+            api_key, model, safe_prompt, search=False,
+            json_mode=json_mode, max_tokens=max_tokens,
+        )
 
-        for candidate in _models(model):
-            try:
-                print(f"安全なエバーグリーン調査モデル: {candidate}")
-                return _call_with_retry(
-                    api_key,
-                    candidate,
-                    safe_prompt,
-                    search=False,
-                    json_mode=json_mode,
-                    max_tokens=max_tokens,
-                )
-            except RuntimeError as e:
-                errors.append(f"{candidate} safe: {e}")
-
-        raise RuntimeError("Gemini調査失敗: " + " / ".join(errors[-4:]))
-
-    for candidate in _models(model):
-        try:
-            if candidate != model:
-                print(f"WARNING: {model} が使えないため {candidate} にフォールバックします")
-            return _call_with_retry(
-                api_key,
-                candidate,
-                prompt,
-                search=False,
-                json_mode=json_mode,
-                max_tokens=max_tokens,
-            )
-        except RuntimeError as e:
-            errors.append(f"{candidate}: {e}")
-
-    raise RuntimeError("Gemini API失敗: " + " / ".join(errors[-3:]))
+    return _call_candidates(
+        api_key, model, prompt, search=False,
+        json_mode=json_mode, max_tokens=max_tokens,
+    )
 
 
 def _seed_group(seed):
