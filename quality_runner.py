@@ -5,6 +5,7 @@ import sys
 import time
 import quality_v2 as q
 from quality_gate import completion_result, evaluate_quality
+from article_checks import practical_static_checks
 from official_sources import TOPIC_SEEDS, search_official_query, source_summary_for_prompt
 
 _base_gemini = q.gemini
@@ -15,11 +16,35 @@ _base_research = q.research
 
 FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.1-flash-lite"]
 _LAST_CALL = 0.0
+_CALL_COUNT = 0
+_EXHAUSTED_MODELS = set()
+
+
+class ModelDailyQuotaExceeded(RuntimeError):
+    """当日の無料枠が尽きたモデル。短時間の再試行では回復しない。"""
+
+
+class ApiCallBudgetExceeded(RuntimeError):
+    """今回の自動実行に割り当てたAPI呼び出し枠を使い切った。"""
+
+
+def _quota_exhausted(exc):
+    message = str(exc).lower()
+    return (
+        "you exceeded your current quota" in message
+        or "quota exceeded for metric" in message
+        or ("http 429" in message and "free_tier_requests" in message)
+    )
+
+
+def _short_error(exc):
+    # Geminiの大きなエラーJSONを繰り返しログへ流さない。
+    return str(exc).splitlines()[0][:180]
 
 
 def _throttle():
     global _LAST_CALL
-    # Free tierの3.8 Flashは短時間の連続呼び出しで429になりやすいので間隔を空ける。
+    # 短時間の連続呼び出しを避ける。日次クォータ超過にはsleepを使わない。
     wait = 13.0 - (time.monotonic() - _LAST_CALL)
     if wait > 0:
         time.sleep(wait)
@@ -27,142 +52,122 @@ def _throttle():
 
 
 def _call_base(*args, **kwargs):
+    global _CALL_COUNT
+    budget = max(1, int(os.getenv("MAX_GEMINI_CALLS", "14")))
+    if _CALL_COUNT >= budget:
+        raise ApiCallBudgetExceeded(
+            f"実行あたりのGemini API呼び出し上限（{budget}回）に達したため公開を保留"
+        )
     _throttle()
+    _CALL_COUNT += 1
     return _base_gemini(*args, **kwargs)
 
 
-def _is_transient_gemini_error(exc: Exception) -> bool:
+def _is_transient_gemini_error(exc):
     message = str(exc).lower()
+    if _quota_exhausted(exc):
+        return False
     return any(
-        token in message
-        for token in (
-            "http 429",
-            "http 500",
-            "http 502",
-            "http 503",
-            "http 504",
-            "resource exhausted",
-            "temporarily unavailable",
-            "unavailable",
-            "high demand",
+        token in message for token in (
+            "http 429", "http 500", "http 502", "http 503", "http 504",
+            "temporarily unavailable", "high demand",
+            "connection reset", "timed out", "timeout",
         )
     )
 
 
 def _call_with_retry(*args, **kwargs):
-    last_error = None
-    for attempt in range(3):
+    # quality_v2.gemini()の内側では再試行しない。ここで一度だけ再試行する。
+    for attempt in range(2):
         try:
-            result = _call_base(*args, **kwargs)
-            return result
+            return _call_base(*args, **kwargs)
+        except (ApiCallBudgetExceeded, ModelDailyQuotaExceeded):
+            raise
         except RuntimeError as exc:
-            last_error = exc
-            if attempt >= 2 or not _is_transient_gemini_error(exc):
+            if _quota_exhausted(exc):
+                raise ModelDailyQuotaExceeded(_short_error(exc)) from exc
+            if attempt or not _is_transient_gemini_error(exc):
                 raise
-            wait = 10 * (attempt + 1)
-            print(
-                f"WARNING: Gemini一時エラーのため{wait}秒後に再試行 "
-                f"({attempt + 1}/2): {exc}"
-            )
-            time.sleep(wait)
-    raise last_error
+            print(f"WARNING: Gemini一時エラー。8秒後に1回だけ再試行: {_short_error(exc)}")
+            time.sleep(8)
+    raise AssertionError("unreachable")
 
 
 def _models(primary):
     out = []
     for model in [primary, *FALLBACK_MODELS]:
-        if model and model not in out:
+        if model and model not in out and model not in _EXHAUSTED_MODELS:
             out.append(model)
     return out
 
 
+def _call_candidates(api_key, model, prompt, *, search, json_mode, max_tokens):
+    errors = []
+    for candidate in _models(model):
+        try:
+            if candidate != model:
+                print(f"INFO: 利用可能な代替Geminiモデル: {candidate}")
+            result = _call_with_retry(
+                api_key, candidate, prompt, search=search,
+                json_mode=json_mode, max_tokens=max_tokens,
+            )
+            if search and len(result[1]) < 2:
+                errors.append(f"{candidate}: 検索ソースが2件未満")
+                continue
+            return result
+        except ModelDailyQuotaExceeded as exc:
+            _EXHAUSTED_MODELS.add(candidate)
+            print(f"WARNING: {candidate} は日次クォータ超過。実行中は再利用しません")
+            errors.append(f"{candidate}: {_short_error(exc)}")
+        except ApiCallBudgetExceeded:
+            raise
+        except RuntimeError as exc:
+            errors.append(f"{candidate}: {_short_error(exc)}")
+
+    if not _models(model):
+        raise ModelDailyQuotaExceeded(
+            "使用可能なGeminiモデルの日次クォータが尽きたため、記事公開を保留"
+        )
+    raise RuntimeError("Gemini API失敗: " + " / ".join(errors[-3:]))
+
+
 def robust_gemini(api_key, model, prompt, search=False, json_mode=False, max_tokens=7000):
     """
-    公式情報の取得はretry_research内で別途実施する。
-    USE_GOOGLE_SEARCH=true の時だけGemini検索グラウンディングも試す。
-    高品質Flashを優先し、必要時のみ現行Flash-Liteへフォールバックする。
+    モデルあたりの日次クォータ枯渇は記録して再試行しない。
+    Gemini検索は任意。記事企画の一次情報はretry_researchで直接取得する。
     """
-    errors = []
-
     if search:
         search_enabled = os.getenv("USE_GOOGLE_SEARCH", "false").strip().lower() in {
             "1", "true", "yes", "on"
         }
-
         if search_enabled:
-            for candidate in _models(model):
-                try:
-                    text, sources, queries = _call_with_retry(
-                        api_key,
-                        candidate,
-                        prompt,
-                        search=True,
-                        json_mode=json_mode,
-                        max_tokens=max_tokens,
-                    )
-                    if len(sources) >= 2:
-                        print(f"検索調査モデル: {candidate} / ソース{len(sources)}件")
-                        return text, sources, queries
-                    errors.append(f"{candidate}: ソース{len(sources)}件")
-                except RuntimeError as e:
-                    errors.append(f"{candidate}: {e}")
+            try:
+                return _call_candidates(
+                    api_key, model, prompt, search=True,
+                    json_mode=json_mode, max_tokens=max_tokens,
+                )
+            except (ModelDailyQuotaExceeded, ApiCallBudgetExceeded):
+                raise
+            except RuntimeError as exc:
+                print(f"WARNING: Gemini検索に失敗したため安全な調査へ: {_short_error(exc)}")
         else:
-            print("INFO: Google検索は無効。API枠を記事品質に使うため安全モードへ進みます")
+            print("INFO: Gemini検索無効（公式ページの直接取得を優先）")
 
         safe_prompt = """
-重要: この実行ではGoogle検索を使っていません。
-検索した、公式情報で確認した、最新情報を確認した、とは絶対に書かないでください。
-
-テーマ選定は長く有効なエバーグリーン内容だけに限定してください。
-禁止:
-- 料金、価格、割合、倍率、ランキング
-- 最新、現在、2026年版など鮮度依存の主張
-- 特定バージョン番号に依存する細かい仕様
-- 医療、法律、投資、税務
-- 「公式が推奨」「標準で必ず有効」など未確認の断定
-
-優先:
-- 読者自身が画面で確認できる手順
-- データ整理、バックアップの考え方
-- 設定を確認する順番
-- トラブルの切り分け方
-- ツールに依存しすぎない作業手順
-
-verified_facts欄も「記事作成時の仮説・確認候補」として慎重に扱ってください。
+重要: このGemini応答にはGoogle検索グラウンディングを使いません。
+自分が検索した、最新情報を調べた、などの主張をしないこと。
+一次情報の確認は別の公式ページ取得処理が行います。
+料金・鮮度依存の未確認主張、根拠のない数値・ランキングを記載しないこと。
 """.strip() + "\n\n" + prompt
+        return _call_candidates(
+            api_key, model, safe_prompt, search=False,
+            json_mode=json_mode, max_tokens=max_tokens,
+        )
 
-        for candidate in _models(model):
-            try:
-                print(f"安全なエバーグリーン調査モデル: {candidate}")
-                return _call_with_retry(
-                    api_key,
-                    candidate,
-                    safe_prompt,
-                    search=False,
-                    json_mode=json_mode,
-                    max_tokens=max_tokens,
-                )
-            except RuntimeError as e:
-                errors.append(f"{candidate} safe: {e}")
-
-        raise RuntimeError("Gemini調査失敗: " + " / ".join(errors[-4:]))
-
-    for candidate in _models(model):
-        try:
-            if candidate != model:
-                print(f"WARNING: {model} が使えないため {candidate} にフォールバックします")
-            return _call_with_retry(
-                api_key,
-                candidate,
-                prompt,
-                search=False,
-                json_mode=json_mode,
-                max_tokens=max_tokens,
-            )
-        except RuntimeError as e:
-            errors.append(f"{candidate}: {e}")
-
-    raise RuntimeError("Gemini API失敗: " + " / ".join(errors[-3:]))
+    return _call_candidates(
+        api_key, model, prompt, search=False,
+        json_mode=json_mode, max_tokens=max_tokens,
+    )
 
 
 def _seed_group(seed):
@@ -445,6 +450,8 @@ def strict_write_article(api_key, model, theme, memo, sources, titles, revision=
 - 環境差・失敗時の確認方法を最低1つ載せる。根拠のない修復手順は書かない
 - エラー対処は検索意図に直結するものだけに絞り、別記事の話題を混ぜない
 - 出力結果を例示する場合は未検証の実測結果と偽らず、説明用の期待値として示す
+- Github.comのSSHキー登録/セットアップでは、公式資料に基づき `ssh -T git@github.com` で接続確認し、期待される認証メッセージを示す
+- VS Codeの`Ctrl+Up`については、ターミナル表示を以前のコマンド位置へスクロールする操作と、入力欄で過去のコマンドを呼び出す操作を混同しない
 - 「便利です」「おすすめです」「重要です」だけで段落を終わらせない
 - 抽象論が2段落続いたら具体例・手順・条件に置き換える
 - 「まとめ」「はじめに」「おわりに」だけの抽象見出しは禁止
@@ -585,6 +592,8 @@ def practical_audit(api_key, model, article, memo):
 - 作業ディレクトリが不明で、説明通り入力しても対象ファイルを見つけられない
 - コマンドをcmd、Python対話モードなどどこへ入力するか分からない
 - 成功したか判断できる表示・結果・確認方法がない
+- GitHub.comのSSHキー登録記事で、`ssh -T git@github.com` による疎通確認と期待する認証メッセージがない
+- VS Codeの履歴ナビゲーションで、`Ctrl+Up` が表示位置へスクロールする操作なのに、入力欄へコマンドを再入力する操作と説明している
 - 記事の目的達成に必須の前提や作業が丸ごと省略されている
 - 利用不可時の切り分けがなく、読者が容易につまずく
 
@@ -600,71 +609,80 @@ def practical_audit(api_key, model, article, memo):
     return completion_result(q.parse_json(text))
 
 
-def strict_critique(api_key, model, article, memo, sources, titles):
-    grounded_ok = False
-    _, report, checks = _base_critique(
-        api_key,
-        model,
-        article,
-        memo,
-        sources,
-        titles,
-    )
-    checks = list(dict.fromkeys([*checks, *strict_local_checks(article, memo, titles)]))
-    text = article["title"] + "\n" + article["body"]
+def preflight_checks(article, memo, sources, titles):
+    """無駄なAPI採点を避けるため、ローカルで落とせる原稿を先に弾く。"""
+    checks = [*strict_local_checks(article, memo, titles)]
+    checks.extend(practical_static_checks(article, memo))
 
-    if len(sources) >= 2:
-        if "## 参考情報" not in article["body"]:
-            checks.append("参考情報セクションがない")
-        refs = article["body"].split("## 参考情報", 1)[1] if "## 参考情報" in article["body"] else ""
+    if len(sources) < 2:
+        checks.append("公式資料が2件未満")
+    if not memo.get("official_evidence"):
+        checks.append("公式資料本文の根拠が調査メモにない")
+
+    body = article["body"]
+    if "## 参考情報" not in body:
+        checks.append("参考情報セクションがない")
+    else:
+        refs = body.split("## 参考情報", 1)[1]
         ref_urls = re.findall(r"https?://[^)\s>]+", refs)
         if len(ref_urls) < 2:
             checks.append("参考リンクが2件未満")
-        allowed_urls = {s.get("url", "") for s in sources}
-        unknown_urls = [u for u in ref_urls if u not in allowed_urls]
-        if unknown_urls:
+        allowed_urls = {source.get("url", "") for source in sources}
+        if any(url not in allowed_urls for url in ref_urls):
             checks.append("公式調査で取得していないURLを参考情報に使用")
-        if "official_evidence" not in memo:
-            checks.append("公式資料本文の根拠が調査メモにない")
-        else:
-            grounded, grounding_problems = grounding_audit(
-                api_key, model, article, memo
-            )
-            grounded_ok = grounded
-            if not grounded:
-                checks.extend(grounding_problems or ["公式資料との整合監査に不合格"])
-    else:
-        risky_patterns = [
-            (r"\d[\d,]*\s*円", "検索未確認なのに具体的な金額を記載"),
-            (r"\d+(?:\.\d+)?\s*%", "検索未確認なのに割合を記載"),
-            (r"\d+(?:\.\d+)?\s*倍", "検索未確認なのに倍率を記載"),
-            (r"(?:必ず|完全に|確実に).{0,24}(?:解決|直る|防げる|成功|復旧)", "検索未確認の結果を強く断定"),
-            (r"(?:最新|2026年版|ランキング)", "検索未確認の鮮度依存表現"),
-        ]
-        for pattern, message in risky_patterns:
-            if re.search(pattern, text, flags=re.IGNORECASE):
-                checks.append(message)
-        if "## 参考情報" in article["body"]:
-            checks.append("検索ソースなしなのに参考情報セクションを生成")
 
-    checks = list(dict.fromkeys(checks))
+    return list(dict.fromkeys(checks))
 
-    # 完走性は編集者の印象点だけでは代替できないため、別の監査で確認する。
-    try:
-        practical_ok, practical_problems = practical_audit(
-            api_key, model, article, memo
-        )
-    except (RuntimeError, ValueError, json.JSONDecodeError) as exc:
-        practical_ok, practical_problems = False, [
-            f"操作完走性監査が失敗: {exc}"
-        ]
-    checks.extend(practical_problems)
 
-    passed, score, decision_reasons = evaluate_quality(
-        report, list(dict.fromkeys(checks)), grounded_ok, practical_ok
+def _early_revision(checks):
+    """機械的にREVISEと判断できる原稿に採点APIを使わない。"""
+    report = {
+        "decision": "REVISE",
+        "score_100": 0,
+        "problems": checks,
+        "revision_instructions": checks,
+    }
+    return False, report, checks
+
+
+def strict_critique(api_key, model, article, memo, sources, titles):
+    checks = preflight_checks(article, memo, sources, titles)
+    if checks:
+        return _early_revision(checks)
+
+    # まず編集点数を取得。明らかな不合格稿に追加のAI監査を使わない。
+    _, report, base_checks = _base_critique(
+        api_key, model, article, memo, sources, titles
+    )
+    checks = list(dict.fromkeys([*checks, *base_checks]))
+    preliminary_pass, score, reasons = evaluate_quality(
+        report, checks, grounded_ok=True, practical_ok=True
     )
     report["score_100"] = score
-    checks = decision_reasons
+    if not preliminary_pass:
+        return False, report, reasons
+
+    # 操作の完走性を先に監査し、欠落があれば公式監査のAPI呼び出しを節約。
+    # API上限エラーはREVISEとして握りつぶさず、投稿せずに実行を止める。
+    practical_ok, practical_problems = practical_audit(
+        api_key, model, article, memo
+    )
+    if not practical_ok:
+        return (
+            False,
+            report,
+            evaluate_quality(
+                report, practical_problems, grounded_ok=True, practical_ok=False
+            )[2],
+        )
+
+    grounded_ok, grounding_problems = grounding_audit(
+        api_key, model, article, memo
+    )
+    passed, score, checks = evaluate_quality(
+        report, grounding_problems, grounded_ok, practical_ok
+    )
+    report["score_100"] = score
     return passed, report, checks
 
 

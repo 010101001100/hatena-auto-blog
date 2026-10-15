@@ -119,41 +119,43 @@ def gemini(api_key, model, prompt, search=False, json_mode=False, max_tokens=700
     if json_mode:
         payload["generationConfig"]["responseMimeType"] = "application/json"
 
-    error = ""
-    for attempt in range(1, 4):
-        try:
-            r = requests.post(
-                url,
-                headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
-                json=payload,
-                timeout=180,
-            )
-            if r.status_code == 200:
-                data = r.json()
-                cand = (data.get("candidates") or [None])[0]
-                if not cand:
-                    raise RuntimeError("Geminiの候補が空です")
-                text = "\n".join(
-                    p.get("text", "") for p in cand.get("content", {}).get("parts", []) if p.get("text")
-                ).strip()
-                if not text:
-                    raise RuntimeError("Geminiの本文が空です")
-                meta = cand.get("groundingMetadata") or {}
-                sources = []
-                for chunk in meta.get("groundingChunks") or []:
-                    web = chunk.get("web") or {}
-                    uri = (web.get("uri") or "").strip()
-                    if uri.startswith(("http://", "https://")):
-                        sources.append({"title": (web.get("title") or uri).strip(), "url": uri})
-                queries = [q for q in (meta.get("webSearchQueries") or []) if isinstance(q, str)]
-                return text, dedupe_sources(sources), queries
-            error = f"HTTP {r.status_code}: {r.text[:1200]}"
-            if r.status_code not in {429, 500, 502, 503, 504}:
-                break
-        except requests.RequestException as e:
-            error = str(e)
-        time.sleep(attempt * 2)
-    raise RuntimeError(f"Gemini API失敗: {error}")
+    # リトライ/モデル切替/予算管理はquality_runner側に一元化する。
+    # 内側でも再試行すると、429が各モデルで乗算されて無料枠を浪費する。
+    try:
+        r = requests.post(
+            url,
+            headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+            json=payload,
+            timeout=90,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Gemini API通信失敗: {exc}") from exc
+
+    if r.status_code != 200:
+        raise RuntimeError(f"Gemini API失敗: HTTP {r.status_code}: {r.text[:1200]}")
+
+    data = r.json()
+    cand = (data.get("candidates") or [None])[0]
+    if not cand:
+        raise RuntimeError("Geminiの候補が空です")
+    text = "\n".join(
+        p.get("text", "") for p in cand.get("content", {}).get("parts", [])
+        if p.get("text")
+    ).strip()
+    if not text:
+        raise RuntimeError("Geminiの本文が空です")
+    meta = cand.get("groundingMetadata") or {}
+    sources = []
+    for chunk in meta.get("groundingChunks") or []:
+        web = chunk.get("web") or {}
+        uri = (web.get("uri") or "").strip()
+        if uri.startswith(("http://", "https://")):
+            sources.append({"title": (web.get("title") or uri).strip(), "url": uri})
+    queries = [
+        query for query in (meta.get("webSearchQueries") or [])
+        if isinstance(query, str)
+    ]
+    return text, dedupe_sources(sources), queries
 
 
 def research(api_key, model, theme, titles, reject=""):
