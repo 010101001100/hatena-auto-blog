@@ -450,6 +450,8 @@ def strict_write_article(api_key, model, theme, memo, sources, titles, revision=
 - 環境差・失敗時の確認方法を最低1つ載せる。根拠のない修復手順は書かない
 - エラー対処は検索意図に直結するものだけに絞り、別記事の話題を混ぜない
 - 出力結果を例示する場合は未検証の実測結果と偽らず、説明用の期待値として示す
+- Github.comのSSHキー登録/セットアップでは、公式資料に基づき `ssh -T git@github.com` で接続確認し、期待される認証メッセージを示す
+- VS Codeの`Ctrl+Up`については、ターミナル表示を以前のコマンド位置へスクロールする操作と、入力欄で過去のコマンドを呼び出す操作を混同しない
 - 「便利です」「おすすめです」「重要です」だけで段落を終わらせない
 - 抽象論が2段落続いたら具体例・手順・条件に置き換える
 - 「まとめ」「はじめに」「おわりに」だけの抽象見出しは禁止
@@ -590,6 +592,8 @@ def practical_audit(api_key, model, article, memo):
 - 作業ディレクトリが不明で、説明通り入力しても対象ファイルを見つけられない
 - コマンドをcmd、Python対話モードなどどこへ入力するか分からない
 - 成功したか判断できる表示・結果・確認方法がない
+- GitHub.comのSSHキー登録記事で、`ssh -T git@github.com` による疎通確認と期待する認証メッセージがない
+- VS Codeの履歴ナビゲーションで、`Ctrl+Up` が表示位置へスクロールする操作なのに、入力欄へコマンドを再入力する操作と説明している
 - 記事の目的達成に必須の前提や作業が丸ごと省略されている
 - 利用不可時の切り分けがなく、読者が容易につまずく
 
@@ -605,71 +609,80 @@ def practical_audit(api_key, model, article, memo):
     return completion_result(q.parse_json(text))
 
 
-def strict_critique(api_key, model, article, memo, sources, titles):
-    grounded_ok = False
-    _, report, checks = _base_critique(
-        api_key,
-        model,
-        article,
-        memo,
-        sources,
-        titles,
-    )
-    checks = list(dict.fromkeys([*checks, *strict_local_checks(article, memo, titles)]))
-    text = article["title"] + "\n" + article["body"]
+def preflight_checks(article, memo, sources, titles):
+    """無駄なAPI採点を避けるため、ローカルで落とせる原稿を先に弾く。"""
+    checks = [*strict_local_checks(article, memo, titles)]
+    checks.extend(practical_static_checks(article, memo))
 
-    if len(sources) >= 2:
-        if "## 参考情報" not in article["body"]:
-            checks.append("参考情報セクションがない")
-        refs = article["body"].split("## 参考情報", 1)[1] if "## 参考情報" in article["body"] else ""
-        ref_urls = re.findall(r"https?://[^)\s>]+", refs)
+    if len(sources) < 2:
+        checks.append("公式資料が2件未満")
+    if not memo.get("official_evidence"):
+        checks.append("公式資料本文の根拠が調査メモにない")
+
+    body = article["body"]
+    if "## 参考情報" not in body:
+        checks.append("参考情報セクションがない")
+    else:
+        refs = body.split("## 参考情報", 1)[1]
+        ref_urls = re.findall(r"https?://[^)\\s>]+", refs)
         if len(ref_urls) < 2:
             checks.append("参考リンクが2件未満")
-        allowed_urls = {s.get("url", "") for s in sources}
-        unknown_urls = [u for u in ref_urls if u not in allowed_urls]
-        if unknown_urls:
+        allowed_urls = {source.get("url", "") for source in sources}
+        if any(url not in allowed_urls for url in ref_urls):
             checks.append("公式調査で取得していないURLを参考情報に使用")
-        if "official_evidence" not in memo:
-            checks.append("公式資料本文の根拠が調査メモにない")
-        else:
-            grounded, grounding_problems = grounding_audit(
-                api_key, model, article, memo
-            )
-            grounded_ok = grounded
-            if not grounded:
-                checks.extend(grounding_problems or ["公式資料との整合監査に不合格"])
-    else:
-        risky_patterns = [
-            (r"\d[\d,]*\s*円", "検索未確認なのに具体的な金額を記載"),
-            (r"\d+(?:\.\d+)?\s*%", "検索未確認なのに割合を記載"),
-            (r"\d+(?:\.\d+)?\s*倍", "検索未確認なのに倍率を記載"),
-            (r"(?:必ず|完全に|確実に).{0,24}(?:解決|直る|防げる|成功|復旧)", "検索未確認の結果を強く断定"),
-            (r"(?:最新|2026年版|ランキング)", "検索未確認の鮮度依存表現"),
-        ]
-        for pattern, message in risky_patterns:
-            if re.search(pattern, text, flags=re.IGNORECASE):
-                checks.append(message)
-        if "## 参考情報" in article["body"]:
-            checks.append("検索ソースなしなのに参考情報セクションを生成")
 
-    checks = list(dict.fromkeys(checks))
+    return list(dict.fromkeys(checks))
 
-    # 完走性は編集者の印象点だけでは代替できないため、別の監査で確認する。
-    try:
-        practical_ok, practical_problems = practical_audit(
-            api_key, model, article, memo
-        )
-    except (RuntimeError, ValueError, json.JSONDecodeError) as exc:
-        practical_ok, practical_problems = False, [
-            f"操作完走性監査が失敗: {exc}"
-        ]
-    checks.extend(practical_problems)
 
-    passed, score, decision_reasons = evaluate_quality(
-        report, list(dict.fromkeys(checks)), grounded_ok, practical_ok
+def _early_revision(checks):
+    """機械的にREVISEと判断できる原稿に採点APIを使わない。"""
+    report = {
+        "decision": "REVISE",
+        "score_100": 0,
+        "problems": checks,
+        "revision_instructions": checks,
+    }
+    return False, report, checks
+
+
+def strict_critique(api_key, model, article, memo, sources, titles):
+    checks = preflight_checks(article, memo, sources, titles)
+    if checks:
+        return _early_revision(checks)
+
+    # まず編集点数を取得。明らかな不合格稿に追加のAI監査を使わない。
+    _, report, base_checks = _base_critique(
+        api_key, model, article, memo, sources, titles
+    )
+    checks = list(dict.fromkeys([*checks, *base_checks]))
+    preliminary_pass, score, reasons = evaluate_quality(
+        report, checks, grounded_ok=True, practical_ok=True
     )
     report["score_100"] = score
-    checks = decision_reasons
+    if not preliminary_pass:
+        return False, report, reasons
+
+    # 操作の完走性を先に監査し、欠落があれば公式監査のAPI呼び出しを節約。
+    # API上限エラーはREVISEとして握りつぶさず、投稿せずに実行を止める。
+    practical_ok, practical_problems = practical_audit(
+        api_key, model, article, memo
+    )
+    if not practical_ok:
+        return (
+            False,
+            report,
+            evaluate_quality(
+                report, practical_problems, grounded_ok=True, practical_ok=False
+            )[2],
+        )
+
+    grounded_ok, grounding_problems = grounding_audit(
+        api_key, model, article, memo
+    )
+    passed, score, checks = evaluate_quality(
+        report, grounding_problems, grounded_ok, practical_ok
+    )
+    report["score_100"] = score
     return passed, report, checks
 
 
