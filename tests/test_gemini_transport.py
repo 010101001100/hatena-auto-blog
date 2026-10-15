@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import quality_v2
+import quality_runner
 
 
 class GeminiTransportTests(unittest.TestCase):
@@ -10,7 +11,7 @@ class GeminiTransportTests(unittest.TestCase):
         response.text = '{"error":{"message":"Quota exceeded for metric"}}'
         with patch.object(quality_v2.requests, "post", return_value=response) as post:
             with self.assertRaisesRegex(RuntimeError, "HTTP 429"):
-                quality_v2.gemini("dummy", "model", "prompt")
+                quality_runner._base_gemini("dummy", "model", "prompt")
         post.assert_called_once()
 
     def test_server_error_issues_one_http_request(self):
@@ -18,7 +19,7 @@ class GeminiTransportTests(unittest.TestCase):
         response.text = '{"error":{"message":"unavailable"}}'
         with patch.object(quality_v2.requests, "post", return_value=response) as post:
             with self.assertRaisesRegex(RuntimeError, "HTTP 503"):
-                quality_v2.gemini("dummy", "model", "prompt")
+                quality_runner._base_gemini("dummy", "model", "prompt")
         post.assert_called_once()
 
     def test_successful_api_response_parses_text_once(self):
@@ -30,7 +31,7 @@ class GeminiTransportTests(unittest.TestCase):
             }]
         }
         with patch.object(quality_v2.requests, "post", return_value=response) as post:
-            text, sources, queries = quality_v2.gemini(
+            text, sources, queries = quality_runner._base_gemini(
                 "dummy", "model", "prompt", json_mode=True
             )
         self.assertEqual(text, "回答です")
