@@ -45,7 +45,7 @@ def editorial_checks(article, memo):
                 issues.append(
                     "変換先に既存ファイルがある場合の上書きリスクを説明する"
                 )
-            if not _has(body, r"\b-n\b|\b-y\b|別名|別の名前|異なる名前|"
+            if not _has(body, r"(?<!\w)-n\b|(?<!\w)-y\b|別名|別の名前|異なる名前|"
                               r"異なるファイル名|出力先を変"):
                 issues.append(
                     "上書きを避けるための -n または別名保存、"
