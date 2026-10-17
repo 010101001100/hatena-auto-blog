@@ -6,8 +6,11 @@ import time
 import quality_v2 as q
 from quality_gate import completion_result, evaluate_quality
 from article_checks import practical_static_checks
+from editorial_guardrails import editorial_checks
 from execution_plan import execution_plan_issues, format_execution_plan
-from official_sources import TOPIC_SEEDS, search_official_query, source_summary_for_prompt
+from official_sources import (
+    TOPIC_SEEDS, fetch_page_text, search_official_query, source_summary_for_prompt,
+)
 
 _base_gemini = q.gemini
 _base_write_article = q.write_article
@@ -260,6 +263,51 @@ def _diversified_seeds(titles):
     return ordered
 
 
+WINDOWS10_SUPPORT_URL = (
+    "https://support.microsoft.com/ja-jp/windows/deployment/updates-lifecycle/"
+    "windows-10-support-has-ended-on-october-14-2025"
+)
+
+
+def _append_lifecycle_evidence(seed, official):
+    """Docker Windows要件記事にMicrosoftの一次情報を追加する。
+
+    Dockerの要件にWindows 10が載っていても、そのOS自体の
+    通常サポートが続いていると誤解させないためのガード。
+    Geminiへの新規呼び出しは増やさない。
+    """
+    if (
+        "docs.docker.com" not in seed.get("domains", [])
+        or not re.search(r"windows", seed.get("label", ""), re.IGNORECASE)
+    ):
+        return official
+    if any(src.get("url") == WINDOWS10_SUPPORT_URL for src in official):
+        return official
+
+    page = fetch_page_text(WINDOWS10_SUPPORT_URL)
+    if not page or not re.search(
+        r"2025.{0,20}10.{0,20}14", page
+    ):
+        print(
+            "WARNING: MicrosoftのWindows 10サポート終了情報が取得できません。"
+            "公開前のローカル検査は引き続き有効です"
+        )
+        return official
+
+    match = re.search(
+        r".{0,250}2025.{0,20}10.{0,20}14.{0,650}",
+        page,
+    )
+    evidence = match.group(0) if match else page[:1200]
+    supplemental = {
+        "title": "Microsoft公式: Windows 10の通常サポート終了",
+        "url": WINDOWS10_SUPPORT_URL,
+        "domain": "support.microsoft.com",
+        "evidence": evidence,
+    }
+    return [*official, supplemental]
+
+
 def retry_research(api_key, model, theme, titles, reject=""):
     """
     先に公式資料を取得できるテーマ候補を選び、
@@ -285,6 +333,7 @@ def retry_research(api_key, model, theme, titles, reject=""):
             )
             continue
 
+        official = _append_lifecycle_evidence(seed, official)
         evidence = source_summary_for_prompt(official)
         plan_prompt = f"""
 あなたは実用系Webメディアの編集者です。
@@ -311,6 +360,10 @@ def retry_research(api_key, model, theme, titles, reject=""):
 - 実機ごとに異なる作業は「要確認」「公式の端末メーカー資料へ」として範囲を区切り、具体的な操作を創作しない
 - 満たす必要のある事前条件を「確認方法」と「不足している場合の分岐」に分ける
 - 完了確認のコマンドや画面表示を、裏付けがある範囲で必ず用意する
+- FFmpegの変換記事なら上書き時の安全な分岐、品質設定が与える影響、変換後の再生・検証方法を扱う
+- FFmpeg公式の64k動画ビットレートは構文の例であり、高画質の推奨値だと扱わない
+- Docker DesktopのWindows要件では、Windows 10の技術要件とMicrosoftのOSサポート期間を区別する
+- 検証可能な公式資料がある場合のみ、機能の比較に読者の使用目的・判断基準を加える
 - 公式資料にない高度なトラブルシューティングへ広げない
 - 読者が実際に操作できる具体的なテーマにする
 - 1記事1検索意図
@@ -425,7 +478,7 @@ def ensure_official_references(article, sources):
             continue
         seen.add(url)
         refs.append(f"- [{title}]({url})")
-        if len(refs) >= 3:
+        if len(refs) >= 4:
             break
 
     if len(refs) < 2:
@@ -473,6 +526,11 @@ def strict_write_article(api_key, model, theme, memo, sources, titles, revision=
 - エラー対処は検索意図に直結するものだけに絞り、別記事の話題を混ぜない
 - 出力結果を例示する場合は未検証の実測結果と偽らず、説明用の期待値として示す
 - Github.comのSSHキー登録/セットアップでは、公式資料に基づき `ssh -T git@github.com` で接続確認し、期待される認証メッセージを示す
+- FFmpegで動画を変換する記事は、元ファイルと出力ファイルの違い、既存ファイルを上書きしない方法（例: `-n`、別名保存）、変換後の確認方法を必ず説明する
+- FFmpeg公式マニュアルの入力例（例: `ffmpeg -i input.avi output.mp4`、`-b:v 64k`）の羅列で終えず、読者の用途に応じたオリジナルのファイル名の例と判断基準を1つ以上加える。捏造した測定結果や画質を断定しない
+- `-b:v 64k` のような極端に低い動画ビットレートは多くの用途で画質が低下し得る。公式の構文例を無条件の推奨設定として掲載しない
+- Dockerの記事でWindows 10を扱う場合、調査資料からMicrosoftの通常サポート終了日（2025年10月14日）と、ESU・LTSCなど一部例外の存在を区別する。Dockerの動作要件をOSの更新保証と混同しない
+- Dockerの動作要件を確認する記事では、メモリ容量・仮想化状態をWindowsでどう確認するか、操作経路を根拠付きで記載する
 - VS Codeの`Ctrl+Up`については、ターミナル表示を以前のコマンド位置へスクロールする操作と、入力欄で過去のコマンドを呼び出す操作を混同しない
 - 「便利です」「おすすめです」「重要です」だけで段落を終わらせない
 - 抽象論が2段落続いたら具体例・手順・条件に置き換える
@@ -568,6 +626,9 @@ def grounding_audit(api_key, model, article, memo):
 - 「通知をオン/オフ」と「通知を許可/ブロック」のように意味が同じ言い換えは矛盾扱いしない
 - OSや端末が異なる手順を混ぜ、読者が操作できなくなる場合は重大なCONFLICT
 - 公式資料にない追加の操作・機能・効果を事実として断定している場合はMATERIAL_UNSUPPORTED
+- FFmpeg公式の構文サンプルを用途に関係なく推奨したり、極端な低ビットレートの影響を説明せず誤解を招いたりしていないか確認する
+- Dockerの動作要件にWindows 10が載っていることと、Microsoftの通常サポート終了とを混同していないか確認する
+- 公式のコマンド例のコピーだけで初心者がファイルを扱えない場合は、個々の操作の整合性と安全性を確認する
 - 危険な操作、データ消失につながる誤り、存在しない設定経路は必ずFAIL
 - 単なる文体、タイトルの言い回し、補足的な説明の不足はこの監査ではFAILにしない
 
@@ -627,6 +688,8 @@ def practical_audit(api_key, model, article, memo):
 - 作業ディレクトリが不明で、説明通り入力しても対象ファイルを見つけられない
 - コマンドをcmd、Python対話モードなどどこへ入力するか分からない
 - 成功したか判断できる表示・結果・確認方法がない
+- FFmpegの動画変換で既存ファイル上書きを避ける方法や、変換後に再生・品質を確認する方法がない
+- Docker Desktopの要件確認でメモリ・仮想化状態の確認手順がなく、適合性を読者が判断できない
 - GitHub.comのSSHキー登録記事で、`ssh -T git@github.com` による疎通確認と期待する認証メッセージがない
 - VS Codeの履歴ナビゲーションで、`Ctrl+Up` が表示位置へスクロールする操作なのに、入力欄へコマンドを再入力する操作と説明している
 - 記事の目的達成に必須の前提や作業が丸ごと省略されている
@@ -651,6 +714,7 @@ def preflight_checks(article, memo, sources, titles):
     """無駄なAPI採点を避けるため、ローカルで落とせる原稿を先に弾く。"""
     checks = [*strict_local_checks(article, memo, titles)]
     checks.extend(practical_static_checks(article, memo))
+    checks.extend(editorial_checks(article, memo))
 
     if len(sources) < 2:
         checks.append("公式資料が2件未満")
