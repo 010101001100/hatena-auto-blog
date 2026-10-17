@@ -7,6 +7,7 @@ on:
       - quality_gate.py
       - article_checks.py
       - execution_plan.py
+      - editorial_guardrails.py
       - tests/**
       - official_sources.py
       - quality_runner.py
@@ -20,6 +21,7 @@ on:
       - quality_gate.py
       - article_checks.py
       - execution_plan.py
+      - editorial_guardrails.py
       - tests/**
       - official_sources.py
       - quality_runner.py
