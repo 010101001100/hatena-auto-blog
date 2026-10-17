@@ -64,7 +64,7 @@ def editorial_checks(article, memo):
             )
 
         # 公式マニュアルの典型例を転載しただけで終わる記事を避ける。
-        commands = re.findall(r"(?mi)^\s*(?:[$>]\s*)?(ffmpeg\s+-i\s+[^\n]+)$", body)
+        commands = re.findall(r"(?mi)^\s*(?:[$>]\s*)?(ffmpeg\s+(?:-[ny]\s+)?-i\s+[^\n]+)$", body)
         manual = {
             "ffmpeg -i input.avi output.mp4",
             "ffmpeg -i input.avi -b:v 64k -bufsize 64k output.mp4",
@@ -96,7 +96,7 @@ def editorial_checks(article, memo):
 
         # 「要件を確認する」ことがゴールの記事では、確認経路が必要。
         checklist_goal = _has(context, r"要件|動作条件|事前チェック|システム条件")
-        if checklist_goal and _has(body, r"\b8\s*GB\b|メモリ容量|RAM容量"):
+        if checklist_goal and _has(body, r"8\s*GB\b|メモリ容量|RAM容量"):
             if not _has(
                 body,
                 r"タスク\s*マネージャ|msinfo32|Get-CimInstance|"
