@@ -84,7 +84,7 @@ def editorial_checks(article, memo):
     )
     if docker_windows:
         # Dockerの技術要件だけで古いOSを推奨してしまわないようにする。
-        if _has(body, r"Windows\s*10\b"):
+        if _has(body, r"Windows\s*10(?!\d)"):
             if not (
                 _has(body, r"2025\s*年\s*10\s*月\s*14\s*日|2025[-/]10[-/]14")
                 and _has(body, r"サポート終了|サポートが終了|通常サポート終了")
