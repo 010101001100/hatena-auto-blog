@@ -66,10 +66,20 @@ class EditorialSafetyTests(unittest.TestCase):
     def test_docker_windows10_requires_support_end_notice(self):
         article = doc_article(
             "Docker Desktop Windowsのインストールモード比較",
-            "Windows 10 22H2でもDockerを動かせる条件を説明する。",
+            "Windows 10はDockerを動かせる条件を説明する。",
         )
         self.assertTrue(
             any("サポート終了日" in x for x in editorial_checks(article, {}))
+        )
+
+    def test_docker_windows10_no_space_japanese_particle(self):
+        article = doc_article(
+            "Docker DesktopのWindows動作環境",
+            "Windows10でも動きますが、ほかの条件を確認してください。",
+        )
+        self.assertTrue(
+            any("サポート終了" in problem
+                for problem in editorial_checks(article, {}))
         )
 
     def test_docker_support_notice_passes(self):
