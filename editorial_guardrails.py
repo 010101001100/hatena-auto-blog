@@ -64,7 +64,7 @@ def editorial_checks(article, memo):
             )
 
         # 公式マニュアルの典型例を転載しただけで終わる記事を避ける。
-        commands = re.findall(r"(?mi)^\s*(?:[$>]\s*)?(ffmpeg\s+(?:-[ny]\s+)?-i\s+[^\n]+)$", body)
+        commands = re.findall(r"(?mi)^\s*(?:[$>]\s*)?`?(ffmpeg\s+(?:-[ny]\s+)?-i\s+[^\n`]+)", body)
         manual = {
             "ffmpeg -i input.avi output.mp4",
             "ffmpeg -i input.avi -b:v 64k -bufsize 64k output.mp4",
