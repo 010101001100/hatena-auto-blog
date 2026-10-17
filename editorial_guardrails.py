@@ -24,7 +24,7 @@ def editorial_checks(article, memo):
 
     # 「ffmpegで変換する」記事に限って適用。ffprobeやコマンド導入記事は対象外。
     ffmpeg_conversion = (
-        _has(context, r"\bffmpeg\b")
+        _has(context, r"ffmpeg")
         and _has(context, r"変換|再エンコード|エンコード|動画形式")
     )
     if ffmpeg_conversion:
