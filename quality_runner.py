@@ -283,13 +283,20 @@ def _diversified_seeds(titles, rotation_day=None):
         + (f" / 除外: {', '.join(sorted(blocked))}" if blocked else "")
     )
 
-    # 各カテゴリの1本目を先に試し、同カテゴリ候補の連続消化を防ぐ。
+    # カテゴリだけでなくグループ内の先頭テーマも毎日変える。
+    # 前日の失敗テーマに翌日も最初のAPIを費やさない。
+    rotated_buckets = {}
+    for group in group_order:
+        choices = buckets[group]
+        shift = (rotation_day + position[group]) % len(choices)
+        rotated_buckets[group] = choices[shift:] + choices[:shift]
+
     ordered = []
-    max_len = max((len(buckets[g]) for g in group_order), default=0)
+    max_len = max((len(rotated_buckets[g]) for g in group_order), default=0)
     for i in range(max_len):
         for group in group_order:
-            if i < len(buckets[group]):
-                ordered.append(buckets[group][i])
+            if i < len(rotated_buckets[group]):
+                ordered.append(rotated_buckets[group][i])
     return ordered
 
 
