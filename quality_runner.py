@@ -3,6 +3,8 @@ import os
 import re
 import sys
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 import quality_v2 as q
 from quality_gate import completion_result, evaluate_quality
 from article_checks import practical_static_checks
@@ -30,6 +32,18 @@ class ModelDailyQuotaExceeded(RuntimeError):
 
 class ApiCallBudgetExceeded(RuntimeError):
     """今回の自動実行に割り当てたAPI呼び出し枠を使い切った。"""
+
+
+class GeminiServiceUnavailable(RuntimeError):
+    """複数モデルで503/タイムアウトが続いた。API保護のため今回の実行を終了。"""
+
+
+def _service_unavailable(exc):
+    message = str(exc).lower()
+    return any(token in message for token in (
+        "http 503", "http 504", "high demand", "service unavailable",
+        "read timed out", "timed out", "timeout",
+    ))
 
 
 def _quota_exhausted(exc):
@@ -107,6 +121,8 @@ def _models(primary):
 
 def _call_candidates(api_key, model, prompt, *, search, json_mode, max_tokens):
     errors = []
+    # 503が別モデルでも続く場合、残りの無料枠を消費せず中断する。
+    unavailable_models = 0
     for candidate in _models(model):
         try:
             if candidate != model:
@@ -123,10 +139,19 @@ def _call_candidates(api_key, model, prompt, *, search, json_mode, max_tokens):
             _EXHAUSTED_MODELS.add(candidate)
             print(f"WARNING: {candidate} は日次クォータ超過。実行中は再利用しません")
             errors.append(f"{candidate}: {_short_error(exc)}")
-        except ApiCallBudgetExceeded:
+        except (ApiCallBudgetExceeded, GeminiServiceUnavailable):
             raise
         except RuntimeError as exc:
             errors.append(f"{candidate}: {_short_error(exc)}")
+            if _service_unavailable(exc):
+                unavailable_models += 1
+                if unavailable_models >= 2:
+                    raise GeminiServiceUnavailable(
+                        "Geminiで503/タイムアウトが複数モデルに発生。"
+                        "無料API枠を守るため今回は公開を保留"
+                    ) from exc
+            else:
+                unavailable_models = 0
 
     if not _models(model):
         raise ModelDailyQuotaExceeded(
@@ -213,7 +238,8 @@ def _title_group(title):
     return None
 
 
-def _diversified_seeds(titles):
+def _diversified_seeds(titles, rotation_day=None):
+    """既存記事のカテゴリ頻度を考慮し、日付で候補の先頭をずらす。"""
     buckets = {}
     for seed in TOPIC_SEEDS:
         buckets.setdefault(_seed_group(seed), []).append(seed)
@@ -237,14 +263,18 @@ def _diversified_seeds(titles):
     if not groups:
         groups = list(buckets)
 
+    # 成功投稿が何日もない場合、従来は同じyt-dlp→Python候補から
+    # 毎朝やり直していた。日付に応じて「未登場カテゴリ」の順番を変更する。
+    if rotation_day is None:
+        rotation_day = datetime.now(ZoneInfo("Asia/Tokyo")).date().toordinal()
+    turn = rotation_day % len(groups)
+    position = {group: index for index, group in enumerate(groups)}
+
     def group_priority(group):
         count = recent_groups.count(group)
-        try:
-            last_seen = recent_groups.index(group)
-        except ValueError:
-            last_seen = 999
-        # 未登場/長く出ていないカテゴリを最優先し、出現回数が多いカテゴリを後回し。
-        return (-last_seen, count)
+        rotation = (position[group] - turn) % len(groups)
+        # 直近14記事で少ないカテゴリを優先。同数なら日別に循環。
+        return (count, rotation)
 
     group_order = sorted(groups, key=group_priority)
     print(
@@ -253,13 +283,20 @@ def _diversified_seeds(titles):
         + (f" / 除外: {', '.join(sorted(blocked))}" if blocked else "")
     )
 
-    # 各カテゴリの1本目を先に試し、同カテゴリ候補の連続消化を防ぐ。
+    # カテゴリだけでなくグループ内の先頭テーマも毎日変える。
+    # 前日の失敗テーマに翌日も最初のAPIを費やさない。
+    rotated_buckets = {}
+    for group in group_order:
+        choices = buckets[group]
+        shift = (rotation_day + position[group]) % len(choices)
+        rotated_buckets[group] = choices[shift:] + choices[:shift]
+
     ordered = []
-    max_len = max((len(buckets[g]) for g in group_order), default=0)
+    max_len = max((len(rotated_buckets[g]) for g in group_order), default=0)
     for i in range(max_len):
         for group in group_order:
-            if i < len(buckets[group]):
-                ordered.append(buckets[group][i])
+            if i < len(rotated_buckets[group]):
+                ordered.append(rotated_buckets[group][i])
     return ordered
 
 
@@ -372,6 +409,8 @@ def retry_research(api_key, model, theme, titles, reject=""):
 - 公式資料にない画面名・手順・仕様・効果を作らない
 - 料金、ランキング、口コミ、推測は扱わない
 - 最近の記事の焼き直しにしない
+- 作業例は公式資料のコマンドをそのままコピーするのでなく、読者が自分で置き換えられる入力例と成功確認を示す
+- 同じ「Python導入後にpipが動くか確認する」の言い換えだけでは独自性が出ないため、具体的な新しい問題や別の用途を解決するテーマにする
 
 JSONだけ:
 {{
@@ -531,6 +570,8 @@ def strict_write_article(api_key, model, theme, memo, sources, titles, revision=
 - `-b:v 64k` のような極端に低い動画ビットレートは多くの用途で画質が低下し得る。公式の構文例を無条件の推奨設定として掲載しない
 - Dockerの記事でWindows 10を扱う場合、調査資料からMicrosoftの通常サポート終了日（2025年10月14日）と、ESU・LTSCなど一部例外の存在を区別する。Dockerの動作要件をOSの更新保証と混同しない
 - Dockerの動作要件を確認する記事では、メモリ容量・仮想化状態をWindowsでどう確認するか、操作経路を根拠付きで記載する
+- PowerShellを開いている読者へ実行ポリシー確認を説明する時は、そのセッションで直接 `Get-ExecutionPolicy` や `Get-ExecutionPolicy -List` を実行させる。`powershell Get-ExecutionPolicy` は別シェルを起動するため、現在セッションの確認として説明しない
+- 独自性は未検証の新事実を捏造する意味ではない。実際に使える固有の作業例・使い分け・よくある失敗の解消を公式資料の範囲で示す
 - VS Codeの`Ctrl+Up`については、ターミナル表示を以前のコマンド位置へスクロールする操作と、入力欄で過去のコマンドを呼び出す操作を混同しない
 - 「便利です」「おすすめです」「重要です」だけで段落を終わらせない
 - 抽象論が2段落続いたら具体例・手順・条件に置き換える

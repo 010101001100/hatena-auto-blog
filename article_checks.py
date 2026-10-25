@@ -42,4 +42,25 @@ def practical_static_checks(article, memo):
                 "hello.pyを実行する例に、ファイルの作成・保存手順がない"
             )
 
+    # PowerShellを開いている利用者が、別のpowershell.exeを起動してしまう
+    # コマンド表記を検出する。cmdから呼ぶ例ならその旨の説明を必須とする。
+    policy_topic = re.search(
+        r"Get-ExecutionPolicy|実行ポリシー", topic, flags=re.IGNORECASE
+    )
+    nested_policy = re.search(
+        r"\bpowershell(?:\.exe)?\s+(?:-Command\s+)?[\"']?Get-ExecutionPolicy\b",
+        body,
+        flags=re.IGNORECASE,
+    )
+    if policy_topic and nested_policy and not re.search(
+        r"コマンドプロンプト|cmd(?:\.exe)?から|別(?:の|プロセス|シェル|セッション)|"
+        r"Windows\s+PowerShellを起動",
+        body, flags=re.IGNORECASE,
+    ):
+        issues.append(
+            "実行ポリシー確認で powershell Get-ExecutionPolicy をそのまま"
+            "勧めている。PowerShell内なら Get-ExecutionPolicy を直接実行し、"
+            "cmdから別のPowerShellを起動する例なら用途を明示する"
+        )
+
     return issues
